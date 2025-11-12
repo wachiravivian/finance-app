@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "finance-app",
-    "slug": "finance-app",
+    "slug": "finance-tracker",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -21,10 +21,18 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.wachirasheila.financeapp"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "9169b79d-06bf-410e-ba01-265d78958db9",
+        "EXPO_PUBLIC_API_BASE": "http://192.168.X.X:8000"
+      }
+    },
+    "owner": "alishe"
   }
 }

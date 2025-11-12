@@ -1,6 +1,22 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
-  }
+    "strict": true,
+    "jsx": "react-native",
+    "moduleResolution": "bundler",
+    "target": "ESNext",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "types": ["react", "react-native"]
+  },
+  "exclude": [
+    "node_modules",
+    "supabase/**"     // ignore Deno edge functions so VS Code doesn't flag 'Deno' & URL imports
+  ],
+  "include": [
+    "src",
+    "App.tsx"
+  ]
 }
