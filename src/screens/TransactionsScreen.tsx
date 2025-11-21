@@ -1,10 +1,8 @@
-// src/screens/TransactionsScreen.tsx
 import React, { useEffect, useState, useCallback } from "react";
-import { View, Text, ScrollView, RefreshControl, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import { View, Text, ScrollView, RefreshControl, TouchableOpacity, StyleSheet, Platform, Alert, ActivityIndicator } from "react-native";
 import { supabase } from "../supabaseClient";
 import MpesaPdfImport from "../components/MpesaPdfImport";
-import PasteTextImport from "../components/PasteTextImport";
-import DebugPdfText from "../components/DebugPdfText";
+import { checkBackendHealth } from "../utils/api";
 
 type Tx = {
   id: string;
@@ -17,12 +15,15 @@ type Tx = {
   reference: string | null;
   category: string | null;
   notes: string | null;
+  title: string | null;
 };
 
 export default function TransactionsScreen() {
   const [rows, setRows] = useState<Tx[]>([]);
   const [loading, setLoading] = useState(false);
-  const [showPasteImport, setShowPasteImport] = useState(false);
+  const [backendOnline, setBackendOnline] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const loadTransactions = useCallback(async () => {
     setLoading(true);
@@ -37,7 +38,7 @@ export default function TransactionsScreen() {
 
     const { data, error } = await supabase
       .from("transactions")
-      .select("id, ts, direction, amount, method, type, counterparty, reference, category, notes")
+      .select("id, ts, direction, amount, method, type, counterparty, reference, category, notes, title")
       .eq("user_id", userId)
       .order("ts", { ascending: false })
       .limit(200);
@@ -53,9 +54,56 @@ export default function TransactionsScreen() {
 
   useEffect(() => {
     loadTransactions();
+    checkBackendConnection();
   }, [loadTransactions]);
 
-  // Calculate summary stats
+  const checkBackendConnection = async () => {
+    const isOnline = await checkBackendHealth();
+    setBackendOnline(isOnline);
+  };
+
+  const clearAllTransactions = async () => {
+    try {
+      setClearing(true);
+      
+      const { data: u, error: authError } = await supabase.auth.getUser();
+      
+      if (authError) {
+        Alert.alert("Error", "Authentication failed");
+        setClearing(false);
+        return;
+      }
+      
+      const userId = u?.user?.id;
+      
+      if (!userId) {
+        Alert.alert("Error", "Not signed in");
+        setClearing(false);
+        return;
+      }
+
+      const { error: deleteError } = await supabase
+        .from("transactions")
+        .delete()
+        .eq("user_id", userId);
+
+      if (deleteError) {
+        Alert.alert("Error", "Failed to delete transactions");
+        setClearing(false);
+        return;
+      }
+
+      Alert.alert("Success", "All transactions cleared successfully");
+      loadTransactions();
+      setShowClearConfirm(false);
+      
+    } catch (err: any) {
+      Alert.alert("Error", err.message);
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const summary = rows.reduce(
     (acc, t) => {
       if (t.direction === "credit") {
@@ -69,14 +117,58 @@ export default function TransactionsScreen() {
   );
 
   return (
-    <ScrollView
+    <ScrollView 
       style={styles.container}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={loadTransactions} />}
+      refreshControl={
+        <RefreshControl 
+          refreshing={loading} 
+          onRefresh={() => {
+            loadTransactions();
+            checkBackendConnection();
+          }} 
+        />
+      }
     >
-      {/* Header */}
       <Text style={styles.title}>Transactions</Text>
 
-      {/* Summary Cards */}
+      {!backendOnline && (
+        <View style={styles.offlineBanner}>
+          <Text style={styles.offlineText}>
+            Backend server offline - PDF import unavailable
+          </Text>
+          <TouchableOpacity onPress={checkBackendConnection}>
+            <Text style={styles.retryText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {rows.length > 0 && (
+        <View style={styles.clearSection}>
+          <Text style={styles.clearWarning}>
+            Clear existing transactions before re-importing to avoid duplicates
+          </Text>
+          <Text style={styles.clearSubtext}>
+            Found {rows.length} transactions
+          </Text>
+          <TouchableOpacity 
+            onPress={() => setShowClearConfirm(true)}
+            disabled={clearing}
+            style={[
+              styles.clearButton,
+              clearing && styles.disabledButton
+            ]}
+          >
+            {clearing ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.clearButtonText}>
+                Clear All Transactions
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
+
       {rows.length > 0 && (
         <View style={styles.summaryContainer}>
           <View style={styles.summaryCard}>
@@ -94,31 +186,10 @@ export default function TransactionsScreen() {
         </View>
       )}
 
-      {/* Import Actions */}
       <View style={styles.actionsContainer}>
         <MpesaPdfImport onImported={loadTransactions} />
-        
-        <TouchableOpacity
-          onPress={() => setShowPasteImport(!showPasteImport)}
-          style={styles.secondaryButton}
-        >
-          <Text style={styles.secondaryButtonText}>
-            {showPasteImport ? "Hide" : "Paste Text"} 📋
-          </Text>
-        </TouchableOpacity>
       </View>
 
-      {/* Paste Text Importer */}
-      {showPasteImport && (
-        <View style={styles.pasteContainer}>
-          <PasteTextImport onImported={() => {
-            loadTransactions();
-            setShowPasteImport(false);
-          }} />
-        </View>
-      )}
-
-      {/* Transaction List */}
       <View style={styles.listContainer}>
         <View style={styles.listHeader}>
           <Text style={styles.listHeaderText}>
@@ -126,14 +197,13 @@ export default function TransactionsScreen() {
           </Text>
           {rows.length > 0 && (
             <TouchableOpacity onPress={loadTransactions}>
-              <Text style={styles.refreshText}>↻ Refresh</Text>
+              <Text style={styles.refreshText}>Refresh</Text>
             </TouchableOpacity>
           )}
         </View>
 
         {rows.length === 0 && !loading && (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyStateEmoji}>📊</Text>
             <Text style={styles.emptyStateText}>No transactions yet</Text>
             <Text style={styles.emptyStateSubtext}>
               Import your M-PESA statement to get started
@@ -149,16 +219,18 @@ export default function TransactionsScreen() {
             <View key={t.id} style={styles.txCard}>
               <View style={styles.txHeader}>
                 <Text style={styles.txCounterparty} numberOfLines={1}>
-                  {t.counterparty || "(No description)"}
+                  {t.counterparty || t.title || "(No description)"}
                 </Text>
                 <Text style={[styles.txAmount, { color: isCredit ? "#16a34a" : "#dc2626" }]}>
                   {isCredit ? "+" : "-"}KES {Number(t.amount ?? 0).toLocaleString()}
                 </Text>
               </View>
-              
               <View style={styles.txMeta}>
                 <Text style={styles.txMetaText}>
-                  {date.toLocaleDateString()} • {date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {date.toLocaleDateString()} • {date.toLocaleTimeString([], { 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                  })}
                 </Text>
                 {t.category && (
                   <View style={styles.categoryBadge}>
@@ -166,7 +238,6 @@ export default function TransactionsScreen() {
                   </View>
                 )}
               </View>
-              
               {t.reference && (
                 <Text style={styles.txReference}>Ref: {t.reference}</Text>
               )}
@@ -174,6 +245,37 @@ export default function TransactionsScreen() {
           );
         })}
       </View>
+
+      {showClearConfirm && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Clear All Transactions?</Text>
+            <Text style={styles.modalText}>
+              This will permanently delete all {rows.length} transactions. This action cannot be undone.
+            </Text>
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                onPress={() => setShowClearConfirm(false)}
+                disabled={clearing}
+                style={[styles.modalButton, styles.cancelButton]}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                onPress={clearAllTransactions}
+                disabled={clearing}
+                style={[styles.modalButton, styles.confirmButton]}
+              >
+                {clearing ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.confirmButtonText}>Clear All</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -189,6 +291,67 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginBottom: 16,
     color: "#0f172a",
+  },
+  offlineBanner: {
+    backgroundColor: "#fef2f2",
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  offlineText: {
+    color: "#dc2626",
+    fontSize: 14,
+    flex: 1,
+  },
+  retryText: {
+    color: "#dc2626",
+    fontWeight: "600",
+    marginLeft: 8,
+  },
+  clearSection: {
+    backgroundColor: "#fffbeb",
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "#fef3c7",
+  },
+  clearWarning: {
+    color: "#92400e",
+    fontSize: 14,
+    marginBottom: 4,
+    textAlign: "center",
+    fontWeight: "600",
+  },
+  clearSubtext: {
+    color: "#92400e",
+    fontSize: 12,
+    marginBottom: 12,
+    textAlign: "center",
+    opacity: 0.8,
+  },
+  clearButton: {
+    backgroundColor: "#dc2626",
+    padding: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+  },
+  disabledButton: {
+    backgroundColor: "#94a3b8",
+    opacity: 0.7,
+  },
+  clearButtonText: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 14,
+    textAlign: "center",
   },
   summaryContainer: {
     flexDirection: "row",
@@ -222,30 +385,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     flexWrap: "wrap",
   },
-  secondaryButton: {
-    backgroundColor: "#fff",
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  secondaryButtonText: {
-    color: "#0f172a",
-    fontWeight: "600",
-    fontSize: 15,
-  },
-  pasteContainer: {
-    backgroundColor: "#fff",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
-  },
   listContainer: {
     marginTop: 8,
   },
@@ -267,10 +406,6 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: "center",
     paddingVertical: 60,
-  },
-  emptyStateEmoji: {
-    fontSize: 48,
-    marginBottom: 12,
   },
   emptyStateText: {
     fontSize: 18,
@@ -336,5 +471,61 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#94a3b8",
     fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+  },
+  modalOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: "white",
+    padding: 20,
+    borderRadius: 12,
+    width: "100%",
+    maxWidth: 400,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 8,
+    color: "#0f172a",
+  },
+  modalText: {
+    fontSize: 14,
+    color: "#64748b",
+    marginBottom: 20,
+    lineHeight: 20,
+  },
+  modalButtons: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  modalButton: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+  },
+  cancelButton: {
+    backgroundColor: "#f1f5f9",
+  },
+  confirmButton: {
+    backgroundColor: "#dc2626",
+  },
+  cancelButtonText: {
+    color: "#64748b",
+    fontWeight: "600",
+  },
+  confirmButtonText: {
+    color: "#fff",
+    fontWeight: "600",
   },
 });

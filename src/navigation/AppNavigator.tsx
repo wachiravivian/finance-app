@@ -1,4 +1,4 @@
-// src/navigation/AppNavigator.tsx
+import "react-native-gesture-handler";
 import React, { useEffect, useState } from "react";
 import { ActivityIndicator, View, Text, StyleSheet } from "react-native";
 import { NavigationContainer, DefaultTheme } from "@react-navigation/native";
@@ -15,29 +15,24 @@ import { colors, spacing } from "../constants/styles";
 import { supabase } from "../supabaseClient";
 import { useAuth } from "../hooks/useAuth";
 
-// Screens (app)
+// Import all your screens...
 import DashboardScreen from "../screens/DashboardScreen";
 import BudgetsScreen from "../screens/BudgetsScreen";
 import GoalsScreen from "../screens/GoalsScreen";
 import RemindersScreen from "../screens/RemindersScreen";
 import TransactionsScreen from "../screens/TransactionsScreen";
+import PaymentsScreen from "../screens/PaymentsScreen";
 import PayScreen from "../screens/PayScreen";
 import ProfileScreen from "../screens/ProfileScreen";
 import GoalDetailScreen from "../screens/GoalDetailScreen";
-
-// Admin screens
 import AdminDashboardScreen from "../screens/AdminDashboardScreen";
 import AdminUsersScreen from "../screens/AdminUsersScreen";
 import AdminReportsScreen from "../screens/AdminReportsScreen";
 import AdminAddUserScreen from "../screens/AdminAddUserScreen";
-
-// Auth screens
 import LoginScreen from "../screens/LoginScreen";
 import SignupScreen from "../screens/SignUpScreen";
 import ForgotPasswordScreen from "../screens/ForgotPasswordScreen";
 import ResetPasswordScreen from "../screens/ResetPasswordScreen";
-
-// ✅ Direct (default) import for Insights — no lazy, no wrapper
 import InsightsScreen from "../screens/InsightsScreen";
 
 // ---------- Types ----------
@@ -48,6 +43,7 @@ export type DrawerParamList = {
   Goals: undefined;
   Reminders: undefined;
   Transactions: undefined;
+  Payments: undefined;
   Insights: undefined;
   Pay: undefined;
   Profile: undefined;
@@ -156,9 +152,9 @@ function AppDrawerNavigator() {
       <Drawer.Screen name="Goals" component={GoalsScreen} />
       <Drawer.Screen name="Reminders" component={RemindersScreen} />
       <Drawer.Screen name="Transactions" component={TransactionsScreen} />
-      {/* ✅ Use the imported InsightsScreen directly */}
-      <Drawer.Screen name="Insights" component={InsightsScreen} />
-      <Drawer.Screen name="Pay" component={PayScreen} />
+      <Drawer.Screen name="Payments" component={PaymentsScreen} options={{ title: "Payment History" }} />
+      <Drawer.Screen name="Insights" component={InsightsScreen} options={{ title: "Financial Insights" }} />
+      <Drawer.Screen name="Pay" component={PayScreen} options={{ title: "Make Payment" }} />
       <Drawer.Screen name="Profile" component={ProfileScreen} />
     </Drawer.Navigator>
   );
@@ -183,26 +179,57 @@ export default function AppNavigator() {
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (!mounted) return;
-      setSignedIn(!!data.session);
-      setChecking(false);
-    });
+    const checkAuth = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          console.error('Auth check error:', error);
+          if (mounted) {
+            setSignedIn(false);
+            setChecking(false);
+          }
+          return;
+        }
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSignedIn(!!session);
+        if (mounted) {
+          setSignedIn(!!session);
+          setChecking(false);
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        if (mounted) {
+          setSignedIn(false);
+          setChecking(false);
+        }
+      }
+    };
+
+    checkAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('Auth state changed:', event);
+      
+      if (mounted) {
+        setSignedIn(!!session);
+        // Only set checking to false after the initial auth state change
+        if (checking) {
+          setChecking(false);
+        }
+      }
     });
 
     return () => {
       mounted = false;
-      sub.subscription?.unsubscribe();
+      subscription.unsubscribe();
     };
   }, []);
 
   if (checking) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#fff" }}>
-        <ActivityIndicator />
+        <ActivityIndicator size="large" />
+        <Text style={{ marginTop: 12, color: "#64748b" }}>Checking authentication...</Text>
       </View>
     );
   }
@@ -211,14 +238,14 @@ export default function AppNavigator() {
 
   return (
     <NavigationContainer theme={navTheme}>
-      <RootStack.Navigator>
+      <RootStack.Navigator screenOptions={{ headerShown: false }}>
         {signedIn ? (
           <>
-            <RootStack.Screen name="AppDrawer" component={AppDrawerNavigator} options={{ headerShown: false }} />
-            <RootStack.Screen name="GoalDetail" component={GoalDetailScreen} options={{ title: "Goal Details" }} />
+            <RootStack.Screen name="AppDrawer" component={AppDrawerNavigator} />
+            <RootStack.Screen name="GoalDetail" component={GoalDetailScreen} options={{ headerShown: true, title: "Goal Details" }} />
           </>
         ) : (
-          <RootStack.Screen name="AuthStack" component={AuthStackNavigator} options={{ headerShown: false }} />
+          <RootStack.Screen name="AuthStack" component={AuthStackNavigator} />
         )}
       </RootStack.Navigator>
     </NavigationContainer>

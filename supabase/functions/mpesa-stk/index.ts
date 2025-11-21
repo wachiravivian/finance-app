@@ -1,100 +1,139 @@
-// @ts-nocheck
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// mpesa-stk/index.ts - COMPLETE STK FUNCTION
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts"
 
-// ENV
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const MPESA_CONSUMER_KEY = Deno.env.get("MPESA_CONSUMER_KEY")!;
-const MPESA_CONSUMER_SECRET = Deno.env.get("MPESA_CONSUMER_SECRET")!;
-const MPESA_SHORTCODE = Deno.env.get("MPESA_SHORTCODE")!;
-const MPESA_PASSKEY = Deno.env.get("MPESA_PASSKEY")!;
-const MPESA_CALLBACK_URL = Deno.env.get("MPESA_CALLBACK_URL")!; // your deployed mpesa-callback
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-// ---- In-memory token cache (per function instance) ----
-let cachedToken: { token: string; expiresAt: number } | null = null;
-
-async function getAccessToken() {
-  const now = Date.now();
-  if (cachedToken && cachedToken.expiresAt > now + 30_000) {
-    return cachedToken.token;
-  }
-  const auth = btoa(`${MPESA_CONSUMER_KEY}:${MPESA_CONSUMER_SECRET}`);
-  const res = await fetch(
-    "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
-    { headers: { Authorization: `Basic ${auth}` } },
-  );
-  const data = await res.json();
-  // token life is 3600s; cache for ~55min
-  cachedToken = { token: data.access_token, expiresAt: now + 55 * 60 * 1000 };
-  return data.access_token;
-}
-
-function timestamp14() {
-  const d = new Date();
-  const two = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`;
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
 serve(async (req) => {
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
   try {
-    const { userId, phone, amount, clientTxId } = await req.json();
-    if (!userId || !phone || !amount || !clientTxId) {
-      return new Response(JSON.stringify({ error: "Missing fields" }), { status: 400 });
+    const body = await req.json()
+    console.log('Received STK request:', body)
+
+    const { phone, amount, goal_id } = body
+
+    // Basic validation
+    if (!phone || !amount || !goal_id) {
+      return new Response(
+        JSON.stringify({ error: 'Missing required fields: phone, amount, goal_id' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
     }
 
-    // pre-create payments row (PENDING)
-    const { error: insErr, data: payRow } = await supabase
-      .from("payments")
-      .insert([{ user_id: userId, phone, amount, client_tx_id: clientTxId }])
-      .select()
-      .single();
-    if (insErr) throw insErr;
+    // Get MPESA credentials
+    const consumerKey = Deno.env.get('DARAJA_CONSUMER_KEY')
+    const consumerSecret = Deno.env.get('DARAJA_CONSUMER_SECRET')
+    const shortcode = Deno.env.get('DARAJA_SHORTCODE')
+    const passkey = Deno.env.get('DARAJA_PASSKEY')
+    const callbackUrl = Deno.env.get('MPESA_CALLBACK_URL')
 
-    const token = await getAccessToken();
-    const ts = timestamp14();
-    const password = btoa(`${MPESA_SHORTCODE}${MPESA_PASSKEY}${ts}`);
+    if (!consumerKey || !consumerSecret) {
+      return new Response(
+        JSON.stringify({ error: 'MPESA credentials not configured' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
 
-    const body = {
-      BusinessShortCode: MPESA_SHORTCODE,
+    // Get MPESA access token
+    const auth = btoa(`${consumerKey}:${consumerSecret}`)
+    const tokenResponse = await fetch(
+      'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials',
+      { 
+        headers: { 
+          Authorization: `Basic ${auth}`,
+        } 
+      }
+    )
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text()
+      console.error('Token request failed:', errorText)
+      return new Response(
+        JSON.stringify({ 
+          error: 'Failed to get MPESA token',
+          details: errorText
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    const tokenData = await tokenResponse.json()
+    const accessToken = tokenData.access_token
+
+    if (!accessToken) {
+      console.error('No access token in response:', tokenData)
+      return new Response(
+        JSON.stringify({ 
+          error: 'No access token received from MPESA',
+          details: tokenData
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    console.log('Successfully obtained access token')
+
+    // Prepare STK push
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[-:]/g, '')
+      .split('.')[0]
+      .replace('T', '')
+    
+    const password = btoa(`${shortcode}${passkey}${timestamp}`)
+
+    const stkPayload = {
+      BusinessShortCode: shortcode,
       Password: password,
-      Timestamp: ts,
+      Timestamp: timestamp,
       TransactionType: "CustomerPayBillOnline",
       Amount: amount,
       PartyA: phone,
-      PartyB: MPESA_SHORTCODE,
+      PartyB: shortcode,
       PhoneNumber: phone,
-      CallBackURL: MPESA_CALLBACK_URL,
-      // Include both userId and clientTxId so callback can reconcile
-      AccountReference: `FinanceApp:${userId}:${clientTxId}`,
-      TransactionDesc: "FinanceApp STK",
-    };
+      CallBackURL: callbackUrl || "https://qcllardftgzjnowkxdul.functions.supabase.co/mpesa-callback",
+      AccountReference: `GOAL-${goal_id}`,
+      TransactionDesc: `Goal ${goal_id}`,
+    }
 
-    const res = await fetch("https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        Connection: "keep-alive",
-      },
-      body: JSON.stringify(body),
-    });
+    console.log('Sending STK push to MPESA:', stkPayload)
 
-    const data = await res.json();
+    // Send STK push
+    const stkResponse = await fetch(
+      'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest',
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(stkPayload),
+      }
+    )
 
-    // update payments with request IDs
-    await supabase
-      .from("payments")
-      .update({
-        merchant_request_id: data.MerchantRequestID ?? null,
-        checkout_request_id: data.CheckoutRequestID ?? null,
-      })
-      .eq("id", payRow.id);
+    const result = await stkResponse.json()
+    console.log('MPESA STK response:', result)
 
-    return new Response(JSON.stringify({ ok: true, data }), { status: 200 });
-  } catch (e) {
-    return new Response(JSON.stringify({ error: String(e) }), { status: 500 });
+    return new Response(
+      JSON.stringify(result),
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    )
+
+  } catch (error) {
+    console.error('STK function error:', error)
+    return new Response(
+      JSON.stringify({ 
+        error: 'Function execution failed',
+        message: error.message
+      }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    )
   }
-});
+})

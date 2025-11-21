@@ -1,5 +1,4 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.6.82/legacy/build/pdf.mjs";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { parseMpesaText } from "../_shared/mpesa-parser.ts";
 
@@ -11,23 +10,6 @@ function corsHeaders(origin: string | null, req?: Request) {
     "Access-Control-Allow-Headers":
       reqHdrs ?? "authorization, apikey, content-type",
   };
-}
-
-async function extractText(pdfBytes: Uint8Array): Promise<string> {
-  (pdfjsLib as any).GlobalWorkerOptions.workerSrc =
-    "https://esm.sh/pdfjs-dist@4.6.82/legacy/build/pdf.worker.mjs";
-
-  const pdf = await (pdfjsLib as any).getDocument({ data: pdfBytes }).promise;
-  let text = "";
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    text += content.items.map((it: any) => it.str ?? "").join(" ") + "\n";
-  }
-  try {
-    await pdf.destroy();
-  } catch {}
-  return text;
 }
 
 serve(async (req) => {
@@ -49,9 +31,11 @@ serve(async (req) => {
     if (userErr || !userData?.user?.id) throw new Error("Invalid token");
     const userId = userData.user.id;
 
-    const pdfBytes = new Uint8Array(await req.arrayBuffer());
-    const extractedText = await extractText(pdfBytes);
-    const txs = parseMpesaText(extractedText);
+    const body = await req.json();
+    const text = body?.text ?? "";
+    if (!text) throw new Error("Missing text input");
+
+    const txs = parseMpesaText(text);
 
     if (!txs.length)
       return new Response(JSON.stringify({ imported: 0, message: "No valid transactions found" }), {
@@ -79,7 +63,7 @@ serve(async (req) => {
       headers: { "Content-Type": "application/json", ...corsHeaders(origin) },
     });
   } catch (e: any) {
-    console.error("PDF import error:", e);
+    console.error("Text import error:", e);
     return new Response(JSON.stringify({ error: String(e.message || e) }), {
       status: 500,
       headers: { "Content-Type": "application/json", ...corsHeaders(origin) },

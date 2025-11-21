@@ -1,311 +1,271 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
-import { View, Text, TextInput, StyleSheet, Alert, ActivityIndicator } from "react-native";
-import { RectButton } from "react-native-gesture-handler";
-import { supabase } from "../supabaseClient";
-import { colors, spacing, radius } from "../constants/styles";
+// src/screens/PaymentsScreen.tsx
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  RefreshControl,
+  ActivityIndicator,
+} from 'react-native';
+import { getPayments, getSuccessfulPayments, Payment } from '../lib/payments';
 
-// Define possible transaction statuses
-type TransactionStatus = "IDLE" | "PENDING_STK" | "PENDING_PAYMENT" | "SUCCESS" | "FAILED";
+const PaymentsScreen: React.FC = () => {
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [view, setView] = useState<'all' | 'success'>('all');
 
-// Define a safe color for failure since 'colors.error' might not exist.
-const FAILURE_COLOR = '#D32F2F';
+  const loadPayments = async () => {
+    try {
+      setLoading(true);
+      let paymentsData: Payment[] = [];
+      
+      if (view === 'all') {
+        paymentsData = await getPayments();
+      } else {
+        paymentsData = await getSuccessfulPayments();
+      }
+      
+      setPayments(paymentsData);
+    } catch (error) {
+      console.error('Error loading payments:', error);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
 
-export default function PaymentsScreen() {
-  const [phone, setPhone] = useState("");
-  const [amount, setAmount] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<TransactionStatus>("IDLE");
-  const [checkoutRequestId, setCheckoutRequestId] = useState<string | null>(null);
-  const [lastResponse, setLastResponse] = useState<any>(null);
-  const [failureMessage, setFailureMessage] = useState<string | null>(null); // NEW: State to store detailed failure reason
+  useEffect(() => {
+    loadPayments();
+  }, [view]);
 
-  // Ref to manage the polling timer
-  const pollingRef = useRef<number | null>(null);
+  const onRefresh = () => {
+    setRefreshing(true);
+    loadPayments();
+  };
 
-  // --- Status Checker Polling Function ---
-  const checkStatus = useCallback(async (requestId: string) => {
-    console.log(`Polling status for ${requestId}...`);
-    setStatus("PENDING_PAYMENT");
-    setFailureMessage(null);
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'SUCCESS': return '#28a745';
+      case 'FAILED': return '#dc3545';
+      case 'PENDING': return '#ffc107';
+      default: return '#6c757d';
+    }
+  };
 
-    try {
-      const { data, error } = await supabase.functions.invoke("mpesa-query", {
-        body: { checkout_request_id: requestId },
-      });
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
 
-      if (error) {
-        console.error("Query Error:", error.message);
-        // If the query itself fails, do not proceed with polling
-        if (pollingRef.current) clearTimeout(pollingRef.current);
-        pollingRef.current = null;
-        setStatus("FAILED");
-        setFailureMessage(`Query failed: ${error.message}`);
-        return;
-      }
+  if (loading && !refreshing) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color="#007bff" />
+        <Text style={styles.loadingText}>Loading payments...</Text>
+      </View>
+    );
+  }
 
-      const remoteStatus = data?.status?.toUpperCase();
-
-      if (remoteStatus === "SUCCESS") {
-        if (pollingRef.current) clearTimeout(pollingRef.current);
-        pollingRef.current = null;
-        setStatus("SUCCESS");
-        Alert.alert("Payment Complete", "Transaction successful!");
-      } else if (remoteStatus === "FAILED") {
-        if (pollingRef.current) clearTimeout(pollingRef.current);
-        pollingRef.current = null;
-        setStatus("FAILED");
-        const msg = data?.status_detail || "The transaction was cancelled or failed by the user. Please try again.";
-        setFailureMessage(msg); // Capture failure detail
-        Alert.alert("Payment Failed", msg);
-      } else {
-        // If still PENDING, reschedule the check
-        pollingRef.current = setTimeout(() => checkStatus(requestId), 3000) as unknown as number;
-      }
-    } catch (e) {
-      console.error("Polling catch error:", e);
-      // Still retry if error, but wait longer
-      pollingRef.current = setTimeout(() => checkStatus(requestId), 5000) as unknown as number;
-    }
-  }, []);
-
-  // Cleanup function for the timer
-  useEffect(() => {
-    return () => {
-      if (pollingRef.current) {
-        clearTimeout(pollingRef.current);
-      }
-    };
-  }, []);
-
-
-  async function payNow() {
-    const amt = Number(amount);
-    if (!/^2547\d{8}$/.test(phone)) {
-      Alert.alert("Invalid phone", "Enter phone as 2547XXXXXXXX");
-      return;
-    }
-    if (!amt || amt < 1) {
-      Alert.alert("Invalid amount", "Enter an amount >= 1");
-      return;
-    }
-
-    // Clear previous transaction states
-    setStatus("PENDING_STK");
-    setCheckoutRequestId(null);
-    setLastResponse(null);
-    setFailureMessage(null); // Clear old failure message
-    if (pollingRef.current) clearTimeout(pollingRef.current);
-
-
-    try {
-      setBusy(true);
-
-      const { data: sessionData } = await supabase.auth.getSession();
-      const user_id = sessionData?.session?.user?.id ?? null;
-
-      // 1. Initiate STK Push
-      const { data, error } = await supabase.functions.invoke("mpesa-stk", {
-        body: { phone, amount: amt, user_id },
-      });
-
-      setLastResponse({ data, error });
-
-      if (error) {
-        setStatus("FAILED");
-        const msg = error.message ?? "Failed to initiate payment. Check your Edge Function logs.";
-        setFailureMessage(`Edge Function Error: ${msg}`); // Capture Edge Function Error
-        Alert.alert("STK Error", msg);
-        return;
-      }
-
-      // 2. Handle M-Pesa API response
-      const mpesaResponse = data;
-
-      if (mpesaResponse?.ResponseCode === "0") {
-        // STK Push successful
-        const requestId = mpesaResponse.CheckoutRequestID;
-        setCheckoutRequestId(requestId);
-
-        const msg =
-          mpesaResponse.CustomerMessage || "STK Push sent! Please check your phone for the M-Pesa prompt.";
-        Alert.alert("Request Sent", msg);
-
-        // 3. Start polling for payment status
-        checkStatus(requestId);
-      } else {
-        // STK Push failed (e.g., duplicate request, invalid number, bad credentials)
-        setStatus("FAILED");
-        const msg =
-          mpesaResponse?.errorMessage ||
-          mpesaResponse?.ResultDesc ||
-          "STK Push failed to send (check M-Pesa API response/credentials).";
-        setFailureMessage(`M-Pesa API Error: ${msg}`); // Capture M-Pesa API Error
-        Alert.alert("STK Failed", String(msg));
-      }
-    } catch (e: any) {
-      console.log("mpesa-stk catch error", e);
-      setStatus("FAILED");
-      const msg = String(e?.message ?? e);
-      setFailureMessage(`Client Catch Error: ${msg}`); // Capture Catch Block Error
-      Alert.alert("Error", msg);
-    } finally {
-      setBusy(false);
-    }
-  }
-  
-  const getStatusDisplay = () => {
-    switch (status) {
-      case "PENDING_STK":
-        return (
-          <View style={styles.statusBox}>
-            <ActivityIndicator size="small" color={colors.primary} />
-            <Text style={[styles.statusText, { color: colors.primary }]}>Sending STK Push...</Text>
-          </View>
-        );
-      case "PENDING_PAYMENT":
-        return (
-          <View style={styles.statusBox}>
-            <ActivityIndicator size="small" color={colors.warning} />
-            <Text style={[styles.statusText, { color: colors.warning }]}>
-              Awaiting M-Pesa payment... (Check your phone)
-            </Text>
-          </View>
-        );
-      case "SUCCESS":
-        return (
-          <View style={styles.statusBox}>
-            <Text style={[styles.statusText, { color: colors.success }]}>✅ Payment Successful!</Text>
-          </View>
-        );
-      case "FAILED":
-        return (
-          <View style={styles.statusBox}>
-            {/* Using a guaranteed red color for failure for immediate visibility */}
-            <Text style={[styles.statusText, { color: FAILURE_COLOR }]}>❌ Payment Failed. Try Again.</Text>
-          </View>
-        );
-      default:
-        return null;
-    }
-  };
-
-  const isActionDisabled = busy || status === "PENDING_PAYMENT";
-
-  return (
-    <View style={styles.container}>
-      <View style={styles.card}>
-        <Text style={styles.title}>Pay with M-Pesa</Text>
-
-        <Text style={styles.label}>Phone (2547XXXXXXXX)</Text>
-        <TextInput
-          style={styles.input}
-          value={phone}
-          onChangeText={setPhone}
-          placeholder="2547XXXXXXXX"
-          keyboardType="phone-pad"
-          autoCapitalize="none"
-          editable={!isActionDisabled}
-        />
-
-        <Text style={styles.label}>Amount (Ksh)</Text>
-        <TextInput
-          style={styles.input}
-          value={amount}
-          onChangeText={setAmount}
-          placeholder="10"
-          keyboardType="numeric"
-          editable={!isActionDisabled}
-        />
-        
-        {getStatusDisplay()}
+  return (
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Payment History</Text>
         
-        {/* NEW: Display detailed failure message */}
-        {status === "FAILED" && failureMessage && (
-            <View style={{ marginTop: spacing.sm, paddingHorizontal: spacing.sm }}>
-                <Text style={{ color: FAILURE_COLOR, fontSize: 13, textAlign: 'center', fontWeight: 'bold' }}>
-                    Reason: {failureMessage}
-                </Text>
+        <View style={styles.toggleContainer}>
+          <TouchableOpacity
+            style={[styles.toggleButton, view === 'all' && styles.toggleButtonActive]}
+            onPress={() => setView('all')}
+          >
+            <Text style={[styles.toggleText, view === 'all' && styles.toggleTextActive]}>
+              All Payments
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.toggleButton, view === 'success' && styles.toggleButtonActive]}
+            onPress={() => setView('success')}
+          >
+            <Text style={[styles.toggleText, view === 'success' && styles.toggleTextActive]}>
+              Successful
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView
+        style={styles.scrollView}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
+        {payments.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyStateText}>
+              {view === 'all' ? 'No payments found' : 'No successful payments'}
+            </Text>
+            <Text style={styles.emptyStateSubtext}>
+              Payments will appear here after you make transactions
+            </Text>
+          </View>
+        ) : (
+          payments.map((payment) => (
+            <View key={payment.id} style={styles.paymentCard}>
+              <View style={styles.paymentHeader}>
+                <Text style={styles.amount}>KES {payment.amount}</Text>
+                <View style={[styles.statusBadge, { backgroundColor: getStatusColor(payment.status) }]}>
+                  <Text style={styles.statusText}>{payment.status}</Text>
+                </View>
+              </View>
+              
+              <View style={styles.paymentDetails}>
+                <Text style={styles.phone}>{payment.phone}</Text>
+                <Text style={styles.date}>{formatDate(payment.created_at)}</Text>
+                
+                {payment.mpesa_receipt && (
+                  <Text style={styles.receipt}>Receipt: {payment.mpesa_receipt}</Text>
+                )}
+                
+                {payment.result_desc && (
+                  <Text style={styles.description}>{payment.result_desc}</Text>
+                )}
+              </View>
             </View>
+          ))
         )}
-
-        <RectButton
-          style={[styles.btn, isActionDisabled && { opacity: 0.5, backgroundColor: colors.muted }]}
-          enabled={!isActionDisabled}
-          onPress={payNow}
-        >
-          <Text style={styles.btnText}>
-            {busy
-              ? "Processing..."
-              : status === "PENDING_PAYMENT"
-              ? "Checking Status..."
-              : "Pay Now"}
-          </Text>
-        </RectButton>
-
-        {checkoutRequestId && (
-          <Text style={styles.requestIdText}>
-            Request ID: {checkoutRequestId}
-          </Text>
-        )}
-
-        {lastResponse && (
-          <View style={{ marginTop: spacing.md }}>
-            <Text style={{ color: colors.muted, fontSize: 12 }}>Last response (debug):</Text>
-            <Text style={{ color: colors.text, fontSize: 12 }}>
-              {JSON.stringify(lastResponse, null, 2)}
-            </Text>
-          </View>
-        )}
-      </View>
-    </View>
-  );
-}
+      </ScrollView>
+    </View>
+  );
+};
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background, padding: spacing.lg },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  title: { fontSize: 20, fontWeight: "800", color: colors.text, marginBottom: spacing.md },
-  label: { fontWeight: "700", color: colors.text, marginTop: spacing.md, marginBottom: 6 },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    paddingHorizontal: spacing.md,
-    height: 44,
-    backgroundColor: "#fff",
-    color: colors.text
-  },
-  btn: {
-    marginTop: spacing.lg,
-    height: 48,
-    borderRadius: radius.md,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  btnText: { color: "#fff", fontWeight: "800" },
-  statusBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: spacing.md,
-    padding: spacing.sm,
-    borderRadius: radius.sm,
-  },
-  statusText: {
-    marginLeft: spacing.sm,
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  requestIdText: {
-    fontSize: 10,
-    color: colors.muted,
-    marginTop: spacing.sm,
-    textAlign: 'center'
-  }
+  container: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 10,
+    color: '#6c757d',
+  },
+  header: {
+    backgroundColor: '#fff',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#dee2e6',
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#1a1a1a',
+    marginBottom: 15,
+  },
+  toggleContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#e9ecef',
+    borderRadius: 8,
+    padding: 4,
+  },
+  toggleButton: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  toggleButtonActive: {
+    backgroundColor: '#007bff',
+  },
+  toggleText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#6c757d',
+  },
+  toggleTextActive: {
+    color: '#fff',
+  },
+  scrollView: {
+    flex: 1,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40,
+  },
+  emptyStateText: {
+    fontSize: 18,
+    color: '#6c757d',
+    marginBottom: 8,
+  },
+  emptyStateSubtext: {
+    fontSize: 14,
+    color: '#adb5bd',
+    textAlign: 'center',
+  },
+  paymentCard: {
+    backgroundColor: '#fff',
+    margin: 10,
+    padding: 16,
+    borderRadius: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  paymentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  amount: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1a1a1a',
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  paymentDetails: {
+    gap: 4,
+  },
+  phone: {
+    fontSize: 14,
+    color: '#495057',
+    fontWeight: '500',
+  },
+  date: {
+    fontSize: 12,
+    color: '#6c757d',
+  },
+  receipt: {
+    fontSize: 12,
+    color: '#28a745',
+    fontFamily: 'monospace',
+  },
+  description: {
+    fontSize: 12,
+    color: '#6c757d',
+    fontStyle: 'italic',
+  },
 });
+
+export default PaymentsScreen;

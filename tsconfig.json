@@ -17,6 +17,7 @@
   ],
   "include": [
     "src",
-    "App.tsx"
+    "App.tsx",
+    "declarations.d.ts"
   ]
 }
