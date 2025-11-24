@@ -1,30 +1,34 @@
 import "react-native-gesture-handler";
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, View, Text, StyleSheet } from "react-native";
-import { NavigationContainer, DefaultTheme } from "@react-navigation/native";
+import { ActivityIndicator, View, Text } from "react-native";
+import { 
+  NavigationContainer, 
+  DarkTheme, 
+  DefaultTheme, 
+  ThemeProvider as NavigationThemeProvider 
+} from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import {
-  createDrawerNavigator,
-  DrawerContentScrollView,
-  DrawerItemList,
+import { 
+  createDrawerNavigator, 
+  DrawerContentScrollView, 
+  DrawerItemList, 
   DrawerItem,
-  type DrawerContentComponentProps,
+  DrawerNavigationProp 
 } from "@react-navigation/drawer";
+import { RouteProp } from "@react-navigation/native";
 
-import { colors, spacing } from "../constants/styles";
+import { useTheme } from "../hooks/useTheme";
+import { spacing } from "../constants/styles";
 import { supabase } from "../supabaseClient";
 import { useAuth } from "../hooks/useAuth";
 
-// Import all your screens...
+// Screens - Make sure these are properly typed in their own files
 import DashboardScreen from "../screens/DashboardScreen";
 import BudgetsScreen from "../screens/BudgetsScreen";
 import GoalsScreen from "../screens/GoalsScreen";
 import RemindersScreen from "../screens/RemindersScreen";
 import TransactionsScreen from "../screens/TransactionsScreen";
-import PaymentsScreen from "../screens/PaymentsScreen";
-import PayScreen from "../screens/PayScreen";
 import ProfileScreen from "../screens/ProfileScreen";
-import GoalDetailScreen from "../screens/GoalDetailScreen";
 import AdminDashboardScreen from "../screens/AdminDashboardScreen";
 import AdminUsersScreen from "../screens/AdminUsersScreen";
 import AdminReportsScreen from "../screens/AdminReportsScreen";
@@ -35,47 +39,62 @@ import ForgotPasswordScreen from "../screens/ForgotPasswordScreen";
 import ResetPasswordScreen from "../screens/ResetPasswordScreen";
 import InsightsScreen from "../screens/InsightsScreen";
 
-// ---------- Types ----------
-export type DrawerParamList = {
-  // user routes
-  Dashboard: undefined;
-  Budgets: undefined;
-  Goals: undefined;
-  Reminders: undefined;
-  Transactions: undefined;
-  Payments: undefined;
-  Insights: undefined;
-  Pay: undefined;
-  Profile: undefined;
+const Drawer = createDrawerNavigator<DrawerParamList>();
+const AuthStack = createNativeStackNavigator<AuthStackParamList>();
+const RootStack = createNativeStackNavigator<RootStackParamList>();
 
-  // admin routes
-  Admin: undefined;
-  AdminUsers: undefined;
-  AdminReports: undefined;
-  AdminAddUser: undefined;
-};
-
+// Define parameter lists
 export type AuthStackParamList = {
-  Login: undefined;
+Login: { prefillEmail?: string } | undefined;
   Signup: undefined;
   ForgotPassword: undefined;
   ResetPassword: undefined;
 };
 
-export type RootStackParamList = {
-  AppDrawer: undefined;
-  GoalDetail: { goalId: string };
-  AuthStack: undefined;
+export type DrawerParamList = {
+  Dashboard: undefined;
+  Budgets: undefined;
+  Goals: undefined;
+  Reminders: undefined;
+  Transactions: undefined;
+  Insights: undefined;
+  Profile: undefined;
+  AdminDashboard: undefined;
+  AdminUsers: undefined;
+  AdminReports: undefined;
+  AdminAddUser: undefined;
 };
 
-// ---------- Navigators ----------
-const Drawer = createDrawerNavigator<DrawerParamList>();
-const AuthStack = createNativeStackNavigator<AuthStackParamList>();
-const RootStack = createNativeStackNavigator<RootStackParamList>();
+export type RootStackParamList = {
+  AuthStack: undefined;
+  AppDrawer: undefined;
+};
 
-// ---------- Custom Drawer Content ----------
-function CustomDrawerContent(props: DrawerContentComponentProps) {
+// Define proper types for drawer content
+type CustomDrawerContentProps = {
+  navigation: DrawerNavigationProp<DrawerParamList>;
+};
+
+// Create properly typed screen components that wrap your actual screens
+const TypedDashboardScreen = (props: any) => <DashboardScreen {...props} />;
+const TypedBudgetsScreen = (props: any) => <BudgetsScreen {...props} />;
+const TypedGoalsScreen = (props: any) => <GoalsScreen {...props} />;
+const TypedRemindersScreen = (props: any) => <RemindersScreen {...props} />;
+const TypedTransactionsScreen = (props: any) => <TransactionsScreen {...props} />;
+const TypedInsightsScreen = (props: any) => <InsightsScreen {...props} />;
+const TypedProfileScreen = (props: any) => <ProfileScreen {...props} />;
+const TypedAdminDashboardScreen = (props: any) => <AdminDashboardScreen {...props} />;
+const TypedAdminUsersScreen = (props: any) => <AdminUsersScreen {...props} />;
+const TypedAdminReportsScreen = (props: any) => <AdminReportsScreen {...props} />;
+const TypedAdminAddUserScreen = (props: any) => <AdminAddUserScreen {...props} />;
+const TypedLoginScreen = (props: any) => <LoginScreen {...props} />;
+const TypedSignupScreen = (props: any) => <SignupScreen {...props} />;
+const TypedForgotPasswordScreen = (props: any) => <ForgotPasswordScreen {...props} />;
+const TypedResetPasswordScreen = (props: any) => <ResetPasswordScreen {...props} />;
+
+function CustomDrawerContent(props: any) {
   const { profile } = useAuth();
+  const { colors } = useTheme();
   const email = profile?.email ?? "—";
   const role = (profile?.role ?? "user").toUpperCase();
 
@@ -84,122 +103,126 @@ function CustomDrawerContent(props: DrawerContentComponentProps) {
   }
 
   return (
-    <DrawerContentScrollView {...props}>
-      {/* Profile header */}
-      <View style={styles.profileBox}>
-        <View style={styles.avatarCircle}>
-          <Text style={styles.avatarText}>{(email?.[0] ?? "U").toUpperCase()}</Text>
+    <DrawerContentScrollView {...props} style={{ backgroundColor: colors.background }}>
+      <View style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.md,
+        borderBottomColor: colors.border,
+        borderBottomWidth: 1,
+      }}>
+        <View style={{
+          width: 42, 
+          height: 42, 
+          borderRadius: 21,
+          backgroundColor: colors.primary,
+          alignItems: "center", 
+          justifyContent: "center",
+        }}>
+          <Text style={{ color: "#fff", fontWeight: "800" }}>
+            {(email?.[0] ?? "U").toUpperCase()}
+          </Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.profileEmail} numberOfLines={1}>{email}</Text>
-          <Text style={styles.profileRole}>{role}</Text>
+          <Text style={{ color: colors.text, fontWeight: "800" }}>{email}</Text>
+          <Text style={{ color: colors.subtitle, fontSize: 12 }}>{role}</Text>
         </View>
       </View>
-
-      {/* Default drawer items */}
       <DrawerItemList {...props} />
-
-      {/* Logout button */}
-      <View style={{ marginTop: spacing.md }}>
-        <DrawerItem
-          label="Log out"
-          onPress={handleSignOut}
-          labelStyle={{ fontWeight: "700", color: "#B00020" }}
-        />
-      </View>
+      <DrawerItem
+        label="Log out"
+        onPress={handleSignOut}
+        labelStyle={{ fontWeight: "700", color: colors.danger }}
+      />
     </DrawerContentScrollView>
   );
 }
 
-// ---------- Drawer Stacks ----------
-function AppDrawerNavigator() {
-  const { isAdmin } = useAuth();
-
-  if (isAdmin) {
-    // Admin-only menu
-    return (
-      <Drawer.Navigator
-        key="admin"
-        initialRouteName="Admin"
-        drawerContent={(props) => <CustomDrawerContent {...props} />}
-        screenOptions={{
-          headerStyle: { backgroundColor: "#fff" },
-          headerTintColor: colors.text,
-        }}
-      >
-        <Drawer.Screen name="Admin" component={AdminDashboardScreen} options={{ title: "Admin Dashboard" }} />
-        <Drawer.Screen name="AdminUsers" component={AdminUsersScreen} options={{ title: "Users" }} />
-        <Drawer.Screen name="AdminReports" component={AdminReportsScreen} options={{ title: "Reports" }} />
-        <Drawer.Screen name="AdminAddUser" component={AdminAddUserScreen} options={{ title: "Add User" }} />
-        <Drawer.Screen name="Profile" component={ProfileScreen} />
-      </Drawer.Navigator>
-    );
-  }
-
-  // Regular user menu
+function UserDrawerNavigator() {
+  const { colors } = useTheme();
   return (
     <Drawer.Navigator
-      key="user"
-      initialRouteName="Dashboard"
       drawerContent={(props) => <CustomDrawerContent {...props} />}
       screenOptions={{
-        headerStyle: { backgroundColor: "#fff" },
+        headerStyle: { backgroundColor: colors.headerBackground },
         headerTintColor: colors.text,
+        drawerStyle: { backgroundColor: colors.background },
+        drawerLabelStyle: { color: colors.text },
       }}
     >
-      <Drawer.Screen name="Dashboard" component={DashboardScreen} />
-      <Drawer.Screen name="Budgets" component={BudgetsScreen} />
-      <Drawer.Screen name="Goals" component={GoalsScreen} />
-      <Drawer.Screen name="Reminders" component={RemindersScreen} />
-      <Drawer.Screen name="Transactions" component={TransactionsScreen} />
-      <Drawer.Screen name="Payments" component={PaymentsScreen} options={{ title: "Payment History" }} />
-      <Drawer.Screen name="Insights" component={InsightsScreen} options={{ title: "Financial Insights" }} />
-      <Drawer.Screen name="Pay" component={PayScreen} options={{ title: "Make Payment" }} />
-      <Drawer.Screen name="Profile" component={ProfileScreen} />
+      <Drawer.Screen name="Dashboard" component={TypedDashboardScreen} />
+      <Drawer.Screen name="Budgets" component={TypedBudgetsScreen} />
+      <Drawer.Screen name="Goals" component={TypedGoalsScreen} />
+      <Drawer.Screen name="Reminders" component={TypedRemindersScreen} />
+      <Drawer.Screen name="Transactions" component={TypedTransactionsScreen} />
+      <Drawer.Screen 
+        name="Insights" 
+        component={TypedInsightsScreen} 
+        options={{ title: "Financial Insights" }} 
+      />
+      <Drawer.Screen name="Profile" component={TypedProfileScreen} />
     </Drawer.Navigator>
   );
 }
 
+function AdminDrawerNavigator() {
+  const { colors } = useTheme();
+  return (
+    <Drawer.Navigator
+      drawerContent={(props) => <CustomDrawerContent {...props} />}
+      screenOptions={{
+        headerStyle: { backgroundColor: colors.headerBackground },
+        headerTintColor: colors.text,
+        drawerStyle: { backgroundColor: colors.background },
+        drawerLabelStyle: { color: colors.text },
+      }}
+    >
+      <Drawer.Screen name="AdminDashboard" component={TypedAdminDashboardScreen} />
+      <Drawer.Screen name="AdminUsers" component={TypedAdminUsersScreen} />
+      <Drawer.Screen name="AdminReports" component={TypedAdminReportsScreen} />
+      <Drawer.Screen name="AdminAddUser" component={TypedAdminAddUserScreen} />
+      <Drawer.Screen name="Profile" component={TypedProfileScreen} />
+    </Drawer.Navigator>
+  );
+}
+
+function AppDrawerNavigator() {
+  const { isAdmin } = useAuth();
+  return isAdmin ? <AdminDrawerNavigator /> : <UserDrawerNavigator />;
+}
+
 function AuthStackNavigator() {
   return (
-    <AuthStack.Navigator initialRouteName="Login" screenOptions={{ headerShown: false }}>
-      <AuthStack.Screen name="Login" component={LoginScreen} />
-      <AuthStack.Screen name="Signup" component={SignupScreen} />
-      <AuthStack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
-      <AuthStack.Screen name="ResetPassword" component={ResetPasswordScreen} />
+    <AuthStack.Navigator screenOptions={{ headerShown: false }}>
+      <AuthStack.Screen name="Login" component={TypedLoginScreen} />
+      <AuthStack.Screen name="Signup" component={TypedSignupScreen} />
+      <AuthStack.Screen name="ForgotPassword" component={TypedForgotPasswordScreen} />
+      <AuthStack.Screen name="ResetPassword" component={TypedResetPasswordScreen} />
     </AuthStack.Navigator>
   );
 }
 
-// ---------- Root ----------
+// Root stack
 export default function AppNavigator() {
   const [checking, setChecking] = useState(true);
   const [signedIn, setSignedIn] = useState(false);
+  const { isDark, colors } = useTheme();
 
   useEffect(() => {
     let mounted = true;
-
+    
     const checkAuth = async () => {
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        
-        if (error) {
-          console.error('Auth check error:', error);
-          if (mounted) {
-            setSignedIn(false);
-            setChecking(false);
-          }
-          return;
-        }
-
+        const { data: { session } } = await supabase.auth.getSession();
         if (mounted) {
           setSignedIn(!!session);
           setChecking(false);
         }
       } catch (error) {
-        console.error('Auth check failed:', error);
+        console.error("Auth check error:", error);
         if (mounted) {
-          setSignedIn(false);
           setChecking(false);
         }
       }
@@ -207,13 +230,10 @@ export default function AppNavigator() {
 
     checkAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('Auth state changed:', event);
-      
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (mounted) {
         setSignedIn(!!session);
-        // Only set checking to false after the initial auth state change
-        if (checking) {
+        if (!checking) {
           setChecking(false);
         }
       }
@@ -221,58 +241,50 @@ export default function AppNavigator() {
 
     return () => {
       mounted = false;
-      subscription.unsubscribe();
+      subscription?.unsubscribe();
     };
   }, []);
 
   if (checking) {
     return (
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#fff" }}>
-        <ActivityIndicator size="large" />
-        <Text style={{ marginTop: 12, color: "#64748b" }}>Checking authentication...</Text>
+      <View style={{ 
+        flex: 1, 
+        alignItems: "center", 
+        justifyContent: "center", 
+        backgroundColor: colors.background 
+      }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={{ marginTop: 12, color: colors.text }}>
+          Checking authentication...
+        </Text>
       </View>
     );
   }
 
-  const navTheme = { ...DefaultTheme, colors: { ...DefaultTheme.colors, background: "#fff" } };
+  // Create navigation theme synced with your ThemeContext
+  const navTheme = {
+    ...(isDark ? DarkTheme : DefaultTheme),
+    colors: {
+      ...(isDark ? DarkTheme.colors : DefaultTheme.colors),
+      background: colors.background,
+      card: colors.cardBackground,
+      text: colors.text,
+      border: colors.border,
+      primary: colors.primary,
+    },
+  };
 
   return (
-    <NavigationContainer theme={navTheme}>
-      <RootStack.Navigator screenOptions={{ headerShown: false }}>
-        {signedIn ? (
-          <>
+    <NavigationThemeProvider value={navTheme}>
+      <NavigationContainer theme={navTheme}>
+        <RootStack.Navigator screenOptions={{ headerShown: false }}>
+          {signedIn ? (
             <RootStack.Screen name="AppDrawer" component={AppDrawerNavigator} />
-            <RootStack.Screen name="GoalDetail" component={GoalDetailScreen} options={{ headerShown: true, title: "Goal Details" }} />
-          </>
-        ) : (
-          <RootStack.Screen name="AuthStack" component={AuthStackNavigator} />
-        )}
-      </RootStack.Navigator>
-    </NavigationContainer>
+          ) : (
+            <RootStack.Screen name="AuthStack" component={AuthStackNavigator} />
+          )}
+        </RootStack.Navigator>
+      </NavigationContainer>
+    </NavigationThemeProvider>
   );
 }
-
-// ---------- Styles ----------
-const styles = StyleSheet.create({
-  profileBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    borderBottomColor: "#EEE",
-    borderBottomWidth: 1,
-    marginBottom: spacing.xs,
-  },
-  avatarCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarText: { color: "#fff", fontWeight: "800" },
-  profileEmail: { color: colors.text, fontWeight: "800" },
-  profileRole: { color: "#64748b", fontSize: 12, marginTop: 2 },
-});

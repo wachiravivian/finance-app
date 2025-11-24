@@ -1,3 +1,4 @@
+// screens/GoalsScreen.tsx - CLEANED VERSION WITHOUT DEBUG/TEST BUTTONS
 import React, { useCallback, useEffect, useState } from "react";
 import {
   Alert,
@@ -10,11 +11,14 @@ import {
   TouchableOpacity,
   ScrollView,
   Dimensions,
+  ActivityIndicator,
+  RefreshControl,
+  Vibration,
 } from "react-native";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import { supabase } from "../supabaseClient";
-import { colors, radius, spacing } from "../constants/styles";
-import DateTimePicker from '@react-native-community/datetimepicker';
+import { useTheme } from "../hooks/useTheme";
+import { useFocusEffect } from '@react-navigation/native';
 
 type Goal = {
   id: string;
@@ -27,32 +31,116 @@ type Goal = {
   created_at?: string;
 };
 
-// Currency formatter
-const formatCurrency = (amount: number) => {
-  return `KES ${Number(amount).toLocaleString()}`;
+type Payment = {
+  id: string;
+  goal_id: string;
+  amount: number;
+  mpesa_receipt: string;
+  phone_number: string;
+  status: string;
+  created_at: string;
 };
 
-const { width: screenWidth } = Dimensions.get('window');
+type PaymentModalState = {
+  visible: boolean;
+  goal: Goal | null;
+  amount: string;
+  phone: string;
+  loading: boolean;
+  error?: string;
+};
+
+type ManualAddModalState = {
+  visible: boolean;
+  goal: Goal | null;
+  amount: string;
+  loading: boolean;
+  error?: string;
+};
+
+type PaymentHistoryModalState = {
+  visible: boolean;
+  goal: Goal | null;
+  payments: Payment[];
+  loading: boolean;
+};
+
+type PaymentSuccessState = {
+  visible: boolean;
+  goalName: string;
+  amount: number;
+  receipt?: string;
+  goalId?: string;
+};
+
+const formatCurrency = (amount: number) => `KSH ${Number(amount).toLocaleString()}`;
+const { width: screenWidth } = Dimensions.get("window");
 
 export default function GoalsScreen() {
+  const { colors } = useTheme();
   const [data, setData] = useState<Goal[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<Partial<Goal> | null>(null);
-  const [selectedGoal, setSelectedGoal] = useState<Goal | null>(null);
-  const [quickSaveAmount, setQuickSaveAmount] = useState('');
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [loading, setLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  
+  // Payment modal state
+  const [paymentModal, setPaymentModal] = useState<PaymentModalState>({
+    visible: false,
+    goal: null,
+    amount: "",
+    phone: "",
+    loading: false,
+    error: "",
+  });
+
+  // Manual add modal state
+  const [manualAddModal, setManualAddModal] = useState<ManualAddModalState>({
+    visible: false,
+    goal: null,
+    amount: "",
+    loading: false,
+    error: "",
+  });
+
+  // Payment history modal state
+  const [paymentHistoryModal, setPaymentHistoryModal] = useState<PaymentHistoryModalState>({
+    visible: false,
+    goal: null,
+    payments: [],
+    loading: false,
+  });
+
+  // Payment success modal state
+  const [paymentSuccess, setPaymentSuccess] = useState<PaymentSuccessState>({
+    visible: false,
+    goalName: '',
+    amount: 0,
+    receipt: '',
+    goalId: ''
+  });
 
   const getUser = async () => {
-    const { data } = await supabase.auth.getUser();
-    return data.user;
+    try {
+      const { data, error } = await supabase.auth.getUser();
+      if (error) throw error;
+      setCurrentUser(data.user);
+      return data.user;
+    } catch (error) {
+      console.error('Error getting user:', error);
+      return null;
+    }
   };
 
-  const load = useCallback(async () => {
+  const loadGoals = useCallback(async () => {
     try {
+      setLoading(true);
       const user = await getUser();
-      if (!user) return;
+      if (!user) {
+        console.log("No user found");
+        return;
+      }
       
       const { data, error } = await supabase
         .from("goals")
@@ -60,160 +148,538 @@ export default function GoalsScreen() {
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
 
-      if (error) {
-        console.error("Goals load error:", error);
-        Alert.alert("Error", error.message);
-        return;
-      }
-      
-      let goals: Goal[] = data || [];
-      
-      // Check if we have any goals, if not create a default one
-      if (goals.length === 0) {
-        const { data: newGoal } = await supabase
-          .from("goals")
-          .insert([{
-            user_id: user.id,
-            name: "Emergency Fund",
-            target_amount: 50000,
-            saved_amount: 0,
-            status: 'active',
-          }])
-          .select();
-          
-        if (newGoal) {
-          goals = [newGoal[0], ...goals];
-        }
-      }
-      
-      setData(goals);
-    } catch (error) {
-      console.error("Failed to load goals:", error);
-      Alert.alert("Error", "Failed to load goals");
+      if (error) throw error;
+      setData(data || []);
+      console.log("Loaded goals:", data?.length || 0);
+    } catch (err: any) {
+      console.error('Error loading goals:', err);
+      Alert.alert("Error", err.message || "Failed to load goals");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
+  const loadPaymentHistory = async (goalId: string) => {
+    try {
+      setPaymentHistoryModal(prev => ({ ...prev, loading: true }));
+      
+      const { data: payments, error } = await supabase
+        .from("goal_payments")
+        .select("*")
+        .eq("goal_id", goalId)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+
+      setPaymentHistoryModal(prev => ({
+        ...prev,
+        payments: payments || [],
+        loading: false
+      }));
+    } catch (err: any) {
+      console.error('Error loading payment history:', err);
+      setPaymentHistoryModal(prev => ({ ...prev, loading: false }));
+    }
+  };
+
+  // REAL-TIME UPDATES SETUP
   useEffect(() => {
-    load();
-  }, [load]);
+    const setupRealTimeUpdates = async () => {
+      const user = await getUser();
+      if (!user) return;
+
+      console.log('🔔 Setting up real-time updates for user:', user.id);
+
+      // Subscribe to goal_updates table
+      const goalUpdatesSubscription = supabase
+        .channel('goal_updates')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'goal_updates',
+            filter: `user_id=eq.${user.id}`
+          },
+          (payload) => {
+            console.log('🔄 Real-time goal update received:', payload);
+            handleRealTimeUpdate(payload.new);
+          }
+        )
+        .subscribe((status) => {
+          console.log('📡 Real-time subscription status:', status);
+        });
+
+      // Subscribe to goals table changes for this user
+      const goalsSubscription = supabase
+        .channel('goals_changes')
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'goals',
+            filter: `user_id=eq.${user.id}`
+          },
+          (payload) => {
+            console.log('🔄 Real-time goal change received:', payload);
+            handleGoalUpdate(payload.new);
+          }
+        )
+        .subscribe();
+
+      return () => {
+        goalUpdatesSubscription.unsubscribe();
+        goalsSubscription.unsubscribe();
+      };
+    };
+
+    setupRealTimeUpdates();
+  }, []);
+
+  // Handle real-time updates from goal_updates table
+  const handleRealTimeUpdate = async (update: any) => {
+    console.log('📢 Processing real-time update:', update);
+    
+    if (update.type === 'mpesa_payment_success') {
+      // Refresh goals to get updated amounts
+      await loadGoals();
+      
+      // Vibrate for success
+      Vibration.vibrate(500);
+      
+      // Show success message
+      setPaymentSuccess({
+        visible: true,
+        goalName: update.message.includes('for') 
+          ? update.message.split('for ')[1] 
+          : 'your goal',
+        amount: update.amount,
+        receipt: update.mpesa_receipt,
+        goalId: update.goal_id
+      });
+      
+      console.log('✅ Payment success modal shown for:', update.goal_id);
+      
+    } else if (update.type === 'mpesa_payment_failed') {
+      // Show failure message
+      Alert.alert(
+        '❌ Payment Failed',
+        update.message || 'Your MPESA payment failed. Please try again.',
+        [{ text: 'OK' }]
+      );
+    }
+  };
+
+  // Handle direct goal updates
+  const handleGoalUpdate = (updatedGoal: Goal) => {
+    console.log('🎯 Goal updated:', updatedGoal);
+    setData(prev => prev.map(goal => 
+      goal.id === updatedGoal.id ? updatedGoal : goal
+    ));
+  };
+
+  // Backup polling for updates (every 15 seconds)
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      loadGoals();
+      console.log('🕒 Polling for updates...');
+    }, 15000);
+
+    return () => clearInterval(pollInterval);
+  }, []);
+
+  // Refresh when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      console.log('🎯 Screen focused, refreshing goals...');
+      loadGoals();
+    }, [loadGoals])
+  );
+
+  useEffect(() => {
+    loadGoals();
+  }, [loadGoals]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await load();
+    await loadGoals();
     setRefreshing(false);
   };
 
-  const onDelete = async (g: Goal) => {
-    Alert.alert("Delete goal?", `This will delete "${g.name}".`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            const { error } = await supabase
-              .from("goals")
-              .delete()
-              .eq("id", g.id);
-
-            if (error) {
-              Alert.alert("Error", error.message);
-            } else {
-              setData(prev => prev.filter(item => item.id !== g.id));
-            }
-          } catch (error) {
-            Alert.alert("Error", "Failed to delete goal");
-          }
-        },
-      },
-    ]);
-  };
-
-  const onDateChange = (event: any, date?: Date) => {
-    setShowDatePicker(false);
-    if (date) {
-      setSelectedDate(date);
-      setDraft(prev => ({ 
-        ...prev, 
-        deadline: date.toISOString().split('T')[0] 
-      }));
+  // Validate phone number
+  const validatePhone = (phone: string): { isValid: boolean; error?: string } => {
+    if (!phone || phone.trim().length === 0) {
+      return { isValid: false, error: "Phone number is required" };
+    }
+    
+    const cleanPhone = phone.replace(/\D/g, '');
+    
+    if (cleanPhone.startsWith('254') && cleanPhone.length === 12) {
+      return { isValid: true };
+    } else if (cleanPhone.startsWith('0') && cleanPhone.length === 10) {
+      return { isValid: true };
+    } else if (cleanPhone.startsWith('7') && cleanPhone.length === 9) {
+      return { isValid: true };
+    } else {
+      return { 
+        isValid: false, 
+        error: "Please enter a valid Kenyan phone number (e.g., 07XX XXX XXX)" 
+      };
     }
   };
 
-  const showDatepicker = () => {
-    setShowDatePicker(true);
-  };
+  // ENHANCED MPESA PAYMENT FUNCTION
+  const makePaymentToGoal = async () => {
+    const { goal, amount, phone } = paymentModal;
+    
+    setPaymentModal(prev => ({ ...prev, error: "" }));
 
-  const addToSavings = async (goalId: string, amount: number) => {
-    if (!amount || amount <= 0) {
-      Alert.alert("Invalid Amount", "Please enter a valid amount");
+    // Validation
+    if (!goal) {
+      setPaymentModal(prev => ({ ...prev, error: "No goal selected" }));
       return;
     }
 
-    try {
-      const goal = data.find(g => g.id === goalId);
-      if (!goal) return;
+    if (!amount || Number(amount) <= 0) {
+      setPaymentModal(prev => ({ ...prev, error: "Please enter a valid amount" }));
+      return;
+    }
 
-      const newAmount = goal.saved_amount + amount;
+    if (Number(amount) < 10) {
+      setPaymentModal(prev => ({ ...prev, error: "Minimum amount is KSH 10" }));
+      return;
+    }
+
+    if (Number(amount) > 70000) {
+      setPaymentModal(prev => ({ ...prev, error: "Maximum amount is KSH 70,000" }));
+      return;
+    }
+
+    const phoneValidation = validatePhone(phone);
+    if (!phoneValidation.isValid) {
+      setPaymentModal(prev => ({ ...prev, error: phoneValidation.error }));
+      return;
+    }
+
+    setPaymentModal(prev => ({ ...prev, loading: true }));
+
+    try {
+      const user = await getUser();
+      if (!user) {
+        throw new Error("Please log in to make payments");
+      }
+
+      console.log('💰 Initiating MPESA payment...');
+      console.log('📝 Payment details:', { 
+        phone, 
+        amount: Number(amount), 
+        goal: goal.name, 
+        user: user.id 
+      });
+
+      // Show immediate processing feedback
+      Alert.alert(
+        "🔄 Processing Payment",
+        `Initiating MPESA payment of KSH ${Number(amount).toLocaleString()} to "${goal.name}"...\n\nYou will receive a prompt on ${phone} shortly.`,
+        [{ text: "OK" }]
+      );
+
+      // Call MPESA function
+      const { data: paymentData, error: paymentError } = await supabase.functions.invoke('mpesa-stk-goal', {
+        body: {
+          phone: phone,
+          amount: Number(amount),
+          goal_id: goal.id,
+          user_id: user.id
+        }
+      });
+
+      console.log('💰 MPESA function FULL response:', JSON.stringify({ paymentData, paymentError }, null, 2));
+
+      if (paymentError) {
+        console.error('❌ Function invocation error:', paymentError);
+        throw new Error(`Payment service error: ${paymentError.message}`);
+      }
+
+      // Check if we got any response
+      if (!paymentData) {
+        throw new Error('No response received from payment service');
+      }
+
+      // Check for success flag
+      if (paymentData.success === false) {
+        throw new Error(paymentData.error || paymentData.message || 'Payment initiation failed');
+      }
+
+      if (!paymentData.success) {
+        // If success property doesn't exist or is false
+        throw new Error(paymentData.error || paymentData.ResponseDescription || 'Payment was not successful');
+      }
+
+      // SUCCESS! Show immediate confirmation
+      console.log('✅ Payment initiated successfully:', paymentData);
       
+      // Close payment modal immediately
+      setPaymentModal({
+        visible: false,
+        goal: null,
+        amount: "",
+        phone: "",
+        loading: false,
+        error: "",
+      });
+
+      // Show waiting message with more details
+      Alert.alert(
+        "📱 MPESA Prompt Sent!", 
+        `Check your phone ${phone} to complete the payment of KSH ${Number(amount).toLocaleString()} for "${goal.name}".\n\n💡 Enter your MPESA PIN when prompted.\n\nYour goal will update automatically once payment is confirmed.`,
+        [{ 
+          text: "OK, I'll check my phone",
+          onPress: () => {
+            // Start polling for this specific goal
+            setTimeout(() => {
+              loadGoals();
+              console.log('🔄 First auto-refresh after payment');
+            }, 5000);
+          }
+        }]
+      );
+
+      // Create a temporary optimistic update
+      setData(prev => prev.map(g => 
+        g.id === goal.id 
+          ? { ...g, saved_amount: g.saved_amount + Number(amount) }
+          : g
+      ));
+
+    } catch (err: any) {
+      console.error("💥 Payment error details:", err);
+      console.error("💥 Error message:", err.message);
+      
+      let errorMessage = "Payment failed. ";
+      
+      // Specific error handling
+      if (err.message?.includes('credentials') || err.message?.includes('configured')) {
+        errorMessage += "MPESA service is not properly configured.";
+      } else if (err.message?.includes('network') || err.message?.includes('fetch')) {
+        errorMessage += "Network error. Please check your internet connection.";
+      } else if (err.message?.includes('authentication') || err.message?.includes('token')) {
+        errorMessage += "MPESA authentication failed.";
+      } else if (err.message?.includes('Insufficient balance')) {
+        errorMessage += "Insufficient MPESA balance.";
+      } else if (err.message?.includes('transaction value')) {
+        errorMessage += "Invalid transaction amount.";
+      } else {
+        errorMessage += err.message || "Please try again later.";
+      }
+      
+      setPaymentModal(prev => ({ ...prev, error: errorMessage }));
+      Alert.alert("❌ Payment Failed", errorMessage);
+    } finally {
+      setPaymentModal(prev => ({ ...prev, loading: false }));
+    }
+  };
+
+  // Manual add to savings
+  const handleManualAdd = async () => {
+    const { goal, amount } = manualAddModal;
+    
+    setManualAddModal(prev => ({ ...prev, error: "" }));
+
+    if (!goal) {
+      setManualAddModal(prev => ({ ...prev, error: "No goal selected" }));
+      return;
+    }
+
+    if (!amount || Number(amount) <= 0) {
+      setManualAddModal(prev => ({ ...prev, error: "Please enter a valid amount" }));
+      return;
+    }
+
+    setManualAddModal(prev => ({ ...prev, loading: true }));
+
+    try {
+      const user = await getUser();
+      if (!user) {
+        throw new Error("Please log in to add savings");
+      }
+
+      const newAmount = goal.saved_amount + Number(amount);
       const { error } = await supabase
         .from("goals")
         .update({ saved_amount: newAmount })
-        .eq("id", goalId);
-
-      if (error) {
-        Alert.alert("Error", error.message);
-      } else {
-        setData(prev => 
-          prev.map(g => 
-            g.id === goalId 
-              ? { ...g, saved_amount: newAmount }
-              : g
-          )
-        );
-        Alert.alert("Success", `KES ${amount} added to ${goal.name}`);
-      }
-    } catch (error) {
-      Alert.alert("Error", "Failed to add savings");
+        .eq("id", goal.id);
+      
+      if (error) throw error;
+      
+      // Update local state immediately
+      setData((prev) =>
+        prev.map((g) => (g.id === goal.id ? { ...g, saved_amount: newAmount } : g))
+      );
+      
+      Alert.alert(
+        "✅ Success", 
+        `KSH ${Number(amount).toLocaleString()} added to "${goal.name}"`,
+        [{ 
+          text: "OK", 
+          onPress: () => setManualAddModal({ 
+            visible: false, 
+            goal: null, 
+            amount: "", 
+            loading: false,
+            error: "",
+          })
+        }]
+      );
+    } catch (err: any) {
+      console.error('Error adding manual savings:', err);
+      setManualAddModal(prev => ({ 
+        ...prev, 
+        error: err.message || "Failed to add savings. Please try again." 
+      }));
+    } finally {
+      setManualAddModal(prev => ({ ...prev, loading: false }));
     }
   };
 
   const openEdit = (g?: Goal) => {
+    console.log("Opening edit modal for goal:", g?.name);
     setDraft(
       g
-        ? { 
-            ...g,
-            deadline: g.deadline || "",
-          }
-        : { 
-            id: "", 
-            name: "", 
-            target_amount: 0, 
-            saved_amount: 0, 
-            status: "active",
-            deadline: "",
-          }
+        ? { ...g }
+        : { id: "", name: "", target_amount: 0, saved_amount: 0, status: "active" }
     );
-    
-    if (g?.deadline) {
-      setSelectedDate(new Date(g.deadline));
-    } else {
-      setSelectedDate(new Date());
-    }
-    
     setOpen(true);
   };
 
+  const openPaymentModal = (goal: Goal) => {
+    console.log("Opening payment modal for goal:", goal.name);
+    setPaymentModal({
+      visible: true,
+      goal,
+      amount: "",
+      phone: "",
+      loading: false,
+      error: "",
+    });
+  };
+
+  const openManualAddModal = (goal: Goal) => {
+    console.log("Opening manual add modal for goal:", goal.name);
+    setManualAddModal({
+      visible: true,
+      goal,
+      amount: "",
+      loading: false,
+      error: "",
+    });
+  };
+
+  const openPaymentHistoryModal = async (goal: Goal) => {
+    console.log("Opening payment history for goal:", goal.name);
+    setPaymentHistoryModal({
+      visible: true,
+      goal,
+      payments: [],
+      loading: true,
+    });
+    
+    await loadPaymentHistory(goal.id);
+  };
+
+  const closeSuccessModal = () => {
+    setPaymentSuccess({
+      visible: false,
+      goalName: '',
+      amount: 0,
+      receipt: '',
+      goalId: ''
+    });
+  };
+
+  const viewGoalDetails = () => {
+    closeSuccessModal();
+    if (paymentSuccess.goalId) {
+      const goal = data.find(g => g.id === paymentSuccess.goalId);
+      if (goal) {
+        openPaymentHistoryModal(goal);
+      }
+    }
+  };
+
+  const markGoalAsCompleted = async (goalId: string) => {
+    Alert.alert(
+      "Mark as Completed",
+      "Are you sure you want to mark this goal as completed?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Mark Complete",
+          style: "default",
+          onPress: async () => {
+            try {
+              const { error } = await supabase
+                .from("goals")
+                .update({ status: "completed" })
+                .eq("id", goalId);
+
+              if (error) throw error;
+
+              setData((prev) =>
+                prev.map((goal) =>
+                  goal.id === goalId ? { ...goal, status: "completed" } : goal
+                )
+              );
+              Alert.alert("✅ Success", "Goal marked as completed!");
+            } catch (err: any) {
+              console.error('Error marking goal as completed:', err);
+              Alert.alert("Error", err.message || "Failed to update goal");
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const reactivateGoal = async (goalId: string) => {
+    try {
+      const { error } = await supabase
+        .from("goals")
+        .update({ status: "active" })
+        .eq("id", goalId);
+
+      if (error) throw error;
+
+      setData((prev) =>
+        prev.map((goal) =>
+          goal.id === goalId ? { ...goal, status: "active" } : goal
+        )
+      );
+      Alert.alert("✅ Success", "Goal reactivated!");
+    } catch (err: any) {
+      console.error('Error reactivating goal:', err);
+      Alert.alert("Error", err.message || "Failed to reactivate goal");
+    }
+  };
+
   const save = async () => {
+    console.log("Saving goal:", draft);
+    
     if (!draft?.name || !draft?.target_amount) {
-      Alert.alert("Missing", "Please fill name and target amount.");
+      Alert.alert("Missing Information", "Please fill in all required fields");
+      return;
+    }
+
+    if (Number(draft.target_amount) <= 0) {
+      Alert.alert("Invalid Amount", "Target amount must be greater than 0");
       return;
     }
 
     try {
       const user = await getUser();
       if (!user) {
-        Alert.alert("Error", "You must be logged in.");
+        Alert.alert("Error", "Please log in to save goals");
         return;
       }
 
@@ -231,315 +697,740 @@ export default function GoalsScreen() {
           .from("goals")
           .insert([goalData])
           .select();
-
-        if (error) {
-          Alert.alert("Error", error.message);
-        } else if (created && created[0]) {
-          setOpen(false);
-          setData(prev => [created[0] as Goal, ...prev]);
-          setDraft(null);
-        }
+        if (error) throw error;
+        setData((prev) => [created?.[0], ...prev]);
+        Alert.alert("✅ Success", "Goal created successfully!");
       } else {
         const { error } = await supabase
           .from("goals")
           .update(goalData)
           .eq("id", draft.id);
-
-        if (error) {
-          Alert.alert("Error", error.message);
-        } else {
-          setOpen(false);
-          setData(prev => 
-            prev.map(item => 
-              item.id === draft.id 
-                ? { ...item, ...goalData } as Goal
-                : item
-            )
-          );
-          setDraft(null);
-        }
+        if (error) throw error;
+        setData((prev) =>
+          prev.map((item) =>
+            item.id === draft.id ? { ...item, ...goalData } : item
+          )
+        );
+        Alert.alert("✅ Success", "Goal updated successfully!");
       }
-    } catch (error) {
-      console.error("Save error:", error);
-      Alert.alert("Error", "Failed to save goal");
+      setOpen(false);
+    } catch (err: any) {
+      console.error('Error saving goal:', err);
+      Alert.alert("Error", err.message || "Failed to save goal");
     }
   };
 
-  const renderGoalCard = (item: Goal) => {
+  const deleteGoal = async (goalId: string) => {
+    Alert.alert(
+      "Delete Goal",
+      "Are you sure you want to delete this goal? This action cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const { error } = await supabase
+                .from("goals")
+                .delete()
+                .eq("id", goalId);
+
+              if (error) throw error;
+
+              setData((prev) => prev.filter((goal) => goal.id !== goalId));
+              Alert.alert("✅ Success", "Goal deleted successfully!");
+            } catch (err: any) {
+              console.error('Error deleting goal:', err);
+              Alert.alert("Error", err.message || "Failed to delete goal");
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const renderGoalCard = ({ item }: { item: Goal }) => {
     const current = Number(item.saved_amount || 0);
     const target = Number(item.target_amount || 1);
     const pct = Math.min(100, Math.round((current / target) * 100));
-    const daysLeft = item.deadline ? Math.ceil((new Date(item.deadline).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) : null;
-
-    // Default color for all goals
-    const defaultColor = '#667eea';
+    const isCompleted = item.status === 'completed' || pct >= 100;
+    const primary = colors.primary;
 
     return (
-      <TouchableOpacity 
-        style={[
-          styles.card,
-          { 
-            borderLeftColor: defaultColor, 
-            borderLeftWidth: 6,
-            backgroundColor: '#fff',
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.1,
-            shadowRadius: 12,
-            elevation: 5,
-          }
-        ]}
-        onPress={() => setSelectedGoal(item)}
-      >
+      <View style={[styles.card, { backgroundColor: colors.cardBackground }]}>
         <View style={styles.cardHeader}>
-          <View style={styles.goalIconContainer}>
-            <View style={[styles.iconCircle, { backgroundColor: `${defaultColor}20` }]}>
-              <Icon 
-                name="target" 
-                size={24} 
-                color={defaultColor} 
-              />
-            </View>
-          </View>
-          
-          <View style={styles.goalInfo}>
-            <Text style={styles.title}>{item.name}</Text>
-            <Text style={styles.amount}>
-              {formatCurrency(current)} / {formatCurrency(target)}
-            </Text>
-          </View>
-        </View>
-        
-        <View style={styles.progressSection}>
-          <View style={styles.progressHeader}>
-            <Text style={styles.progressText}>Progress</Text>
-            <Text style={styles.percentage}>{pct}%</Text>
-          </View>
-          <View style={styles.progressWrap}>
-            <View 
-              style={[
-                styles.progressFill, 
-                { 
-                  width: `${pct}%`,
-                  backgroundColor: defaultColor
-                }
-              ]} 
+          <View style={[styles.iconCircle, { backgroundColor: isCompleted ? '#10b981' : `${primary}22` }]}>
+            <Icon 
+              name={isCompleted ? "check" : "target"} 
+              size={24} 
+              color={isCompleted ? "#fff" : primary} 
             />
           </View>
-        </View>
-        
-        <View style={styles.cardFooter}>
-          <View style={styles.footerInfo}>
-            {item.deadline && (
-              <View style={styles.deadlineContainer}>
-                <Icon name="calendar" size={14} color="#64748b" />
-                <Text style={styles.deadline}>
-                  {daysLeft && daysLeft > 0 ? `${daysLeft} days left` : 'Due: ' + new Date(item.deadline).toLocaleDateString()}
-                </Text>
-              </View>
-            )}
-            <View style={styles.statusIndicator}>
-              <View 
-                style={[
-                  styles.statusDot,
-                  { backgroundColor: pct >= 100 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444' }
-                ]} 
-              />
-              <Text style={styles.statusText}>
-                {pct >= 100 ? 'Completed' : pct >= 50 ? 'On Track' : 'Needs Attention'}
-              </Text>
+          <View style={styles.cardContent}>
+            <View style={styles.titleRow}>
+              <Text style={[styles.title, { color: colors.text }]}>{item.name}</Text>
+              {isCompleted && (
+                <View style={[styles.completedBadge, { backgroundColor: '#10b981' }]}>
+                  <Text style={styles.completedText}>Completed</Text>
+                </View>
+              )}
             </View>
+            <Text style={[styles.amount, { color: colors.text }]}>
+              {formatCurrency(current)} / {formatCurrency(target)}
+            </Text>
+            <Text style={[styles.progressText, { color: colors.subtitle }]}>
+              {pct}% complete
+            </Text>
+          </View>
+          <TouchableOpacity 
+            style={styles.menuButton}
+            onPress={() => openGoalMenu(item)}
+          >
+            <Icon name="dots-vertical" size={20} color={colors.subtitle} />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.progressSection}>
+          <View style={styles.progressWrap}>
+            <View
+              style={[
+                styles.progressFill,
+                { 
+                  width: `${pct}%`, 
+                  backgroundColor: isCompleted ? '#10b981' : primary 
+                },
+              ]}
+            />
           </View>
         </View>
 
         <View style={styles.actions}>
-          <TouchableOpacity 
-            style={[styles.actionBtn, styles.addMoneyBtn]} 
-            onPress={() => {
-              Alert.prompt(
-                `Add to ${item.name}`,
-                'Enter amount to add:',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  { 
-                    text: 'Add', 
-                    onPress: (amount) => {
-                      if (amount) {
-                        addToSavings(item.id, Number(amount));
-                      }
-                    }
-                  }
-                ],
-                'plain-text',
-                '',
-                'numeric'
-              );
-            }}
+          <TouchableOpacity
+            style={[
+              styles.actionBtn, 
+              { 
+                backgroundColor: isCompleted ? '#9ca3af' : colors.primary,
+                opacity: isCompleted ? 0.6 : 1
+              }
+            ]}
+            onPress={() => openPaymentModal(item)}
+            disabled={isCompleted}
+          >
+            <Icon name="cellphone" size={16} color="#fff" />
+            <Text style={styles.btnText}>
+              {isCompleted ? 'Completed' : 'MPESA Pay'}
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[
+              styles.actionBtn, 
+              { 
+                backgroundColor: isCompleted ? '#9ca3af' : "#10b981",
+                opacity: isCompleted ? 0.6 : 1
+              }
+            ]}
+            onPress={() => openManualAddModal(item)}
+            disabled={isCompleted}
           >
             <Icon name="plus-circle" size={16} color="#fff" />
-            <Text style={styles.btnText}>Add Money</Text>
+            <Text style={styles.btnText}>
+              {isCompleted ? 'Completed' : 'Add Cash'}
+            </Text>
           </TouchableOpacity>
           
-          <TouchableOpacity 
-            style={[styles.actionBtn, styles.editBtn]} 
-            onPress={() => openEdit(item)}
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: "#6b7280" }]}
+            onPress={() => openPaymentHistoryModal(item)}
           >
-            <Icon name="pencil" size={16} color="#fff" />
-            <Text style={styles.btnText}>Edit</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={[styles.actionBtn, styles.deleteBtn]} 
-            onPress={() => onDelete(item)}
-          >
-            <Icon name="delete" size={16} color="#fff" />
-            <Text style={styles.btnText}>Delete</Text>
+            <Icon name="history" size={16} color="#fff" />
+            <Text style={styles.btnText}>History</Text>
           </TouchableOpacity>
         </View>
-      </TouchableOpacity>
+      </View>
     );
   };
 
-  return (
-    <View style={styles.screen}>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.headerTitle}>My Goals</Text>
-          <Text style={styles.headerSubtitle}>Track and achieve your financial dreams</Text>
+  const openGoalMenu = (goal: Goal) => {
+    const isCompleted = goal.status === 'completed';
+    
+    Alert.alert(
+      goal.name,
+      "Choose an action",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Edit Goal", onPress: () => openEdit(goal) },
+        { text: "View Payment History", onPress: () => openPaymentHistoryModal(goal) },
+        isCompleted 
+          ? { text: "Reactivate Goal", onPress: () => reactivateGoal(goal.id) }
+          : { text: "Mark as Completed", onPress: () => markGoalAsCompleted(goal.id) },
+        { 
+          text: "Delete Goal", 
+          style: "destructive",
+          onPress: () => deleteGoal(goal.id) 
+        },
+      ]
+    );
+  };
+
+  const renderPaymentItem = ({ item }: { item: Payment }) => (
+    <View style={[styles.paymentItem, { backgroundColor: colors.background }]}>
+      <View style={styles.paymentHeader}>
+        <View style={styles.paymentAmount}>
+          <Text style={[styles.paymentAmountText, { color: colors.text }]}>
+            {formatCurrency(item.amount)}
+          </Text>
+          <View style={[
+            styles.statusBadge,
+            { 
+              backgroundColor: item.status === 'completed' ? '#10b98120' : 
+                             item.status === 'failed' ? '#ef444420' : '#f59e0b20'
+            }
+          ]}>
+            <Text style={[
+              styles.statusText,
+              { 
+                color: item.status === 'completed' ? '#10b981' : 
+                       item.status === 'failed' ? '#ef4444' : '#f59e0b'
+              }
+            ]}>
+              {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
+            </Text>
+          </View>
         </View>
-        <TouchableOpacity style={styles.addButton} onPress={() => openEdit()}>
-          <Icon name="plus" size={20} color="#fff" />
-          <Text style={styles.addButtonText}>New Goal</Text>
-        </TouchableOpacity>
+        <Text style={[styles.paymentDate, { color: colors.subtitle }]}>
+          {new Date(item.created_at).toLocaleDateString()}
+        </Text>
+      </View>
+      
+      <View style={styles.paymentDetails}>
+        <Text style={[styles.paymentPhone, { color: colors.subtitle }]}>
+          📱 {item.phone_number}
+        </Text>
+        {item.mpesa_receipt && (
+          <Text style={[styles.paymentReceipt, { color: colors.subtitle }]}>
+            Receipt: {item.mpesa_receipt}
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+
+  if (loading) {
+    return (
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={[styles.loadingText, { color: colors.text }]}>
+          Loading your goals...
+        </Text>
+      </View>
+    );
+  }
+
+  const totalSaved = data.reduce((sum, goal) => sum + goal.saved_amount, 0);
+  const totalTarget = data.reduce((sum, goal) => sum + goal.target_amount, 0);
+  const overallProgress = totalTarget > 0 ? (totalSaved / totalTarget) * 100 : 0;
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Header */}
+      <View style={[styles.header, { backgroundColor: colors.cardBackground }]}>
+        <View style={styles.headerContent}>
+          <Text style={[styles.headerTitle, { color: colors.text }]}>My Goals</Text>
+          <Text style={[styles.headerSubtitle, { color: colors.subtitle }]}>
+            Track and achieve your financial dreams
+          </Text>
+          
+          {/* Overall Progress */}
+          {data.length > 0 && (
+            <View style={styles.overallProgress}>
+              <View style={styles.overallProgressText}>
+                <Text style={[styles.overallAmount, { color: colors.text }]}>
+                  {formatCurrency(totalSaved)} saved
+                </Text>
+                <Text style={[styles.overallTarget, { color: colors.subtitle }]}>
+                  of {formatCurrency(totalTarget)} target
+                </Text>
+              </View>
+              <Text style={[styles.overallPercentage, { color: colors.primary }]}>
+                {Math.round(overallProgress)}%
+              </Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.headerButtons}>
+          <TouchableOpacity
+            style={[styles.addButton, { backgroundColor: colors.primary }]}
+            onPress={() => openEdit()}
+          >
+            <Icon name="plus" size={20} color="#fff" />
+            <Text style={styles.addButtonText}>New Goal</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
+      {/* Goals List */}
       <FlatList
         data={data}
+        renderItem={renderGoalCard}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => renderGoalCard(item)}
-        onRefresh={onRefresh}
         refreshing={refreshing}
+        onRefresh={onRefresh}
+        contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[colors.primary]}
+            tintColor={colors.primary}
+          />
+        }
         ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <View style={styles.emptyIllustration}>
-              <Icon name="target" size={80} color="#cbd5e1" />
-            </View>
-            <Text style={styles.emptyTitle}>No goals yet</Text>
-            <Text style={styles.emptySubtitle}>
-              Start your savings journey by creating your first goal
+          <View style={styles.emptyContainer}>
+            <Icon name="target" size={64} color={colors.subtitle} />
+            <Text style={[styles.emptyTitle, { color: colors.text }]}>
+              No goals yet
             </Text>
-            <TouchableOpacity style={styles.createFirstButton} onPress={() => openEdit()}>
-              <Text style={styles.createFirstText}>Create Your First Goal</Text>
+            <Text style={[styles.emptyText, { color: colors.subtitle }]}>
+              Create your first savings goal to get started on your financial journey
+            </Text>
+            <TouchableOpacity
+              style={[styles.emptyButton, { backgroundColor: colors.primary }]}
+              onPress={() => openEdit()}
+            >
+              <Icon name="plus" size={20} color="#fff" />
+              <Text style={styles.emptyButtonText}>Create Your First Goal</Text>
             </TouchableOpacity>
           </View>
         }
-        contentContainerStyle={styles.listContent}
+        ListHeaderComponent={
+          data.length > 0 ? (
+            <View style={styles.statsContainer}>
+              <View style={[styles.statCard, { backgroundColor: colors.cardBackground }]}>
+                <Icon name="target" size={24} color={colors.primary} />
+                <Text style={[styles.statNumber, { color: colors.text }]}>{data.length}</Text>
+                <Text style={[styles.statLabel, { color: colors.subtitle }]}>Total Goals</Text>
+              </View>
+              <View style={[styles.statCard, { backgroundColor: colors.cardBackground }]}>
+                <Icon name="check-circle" size={24} color="#10b981" />
+                <Text style={[styles.statNumber, { color: colors.text }]}>
+                  {data.filter(g => g.status === 'completed').length}
+                </Text>
+                <Text style={[styles.statLabel, { color: colors.subtitle }]}>Completed</Text>
+              </View>
+              <View style={[styles.statCard, { backgroundColor: colors.cardBackground }]}>
+                <Icon name="trending-up" size={24} color="#f59e0b" />
+                <Text style={[styles.statNumber, { color: colors.text }]}>
+                  {data.filter(g => g.status === 'active').length}
+                </Text>
+                <Text style={[styles.statLabel, { color: colors.subtitle }]}>In Progress</Text>
+              </View>
+            </View>
+          ) : null
+        }
       />
 
-      {/* Edit/Create Modal */}
-      <Modal 
-        visible={open} 
-        animationType="slide" 
-        transparent 
-        onRequestClose={() => setOpen(false)}
-      >
+      {/* GOAL EDIT MODAL */}
+      <Modal visible={open} animationType="slide" transparent statusBarTranslucent>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
+          <View style={[styles.modalContainer, { backgroundColor: colors.cardBackground }]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {draft?.id ? "Edit Goal" : "Create New Goal"}
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                {draft?.id ? "Edit Goal" : "New Goal"}
               </Text>
-              <TouchableOpacity onPress={() => setOpen(false)} style={styles.closeButton}>
-                <Icon name="close" size={24} color="#64748b" />
+              <TouchableOpacity 
+                style={styles.closeButton}
+                onPress={() => setOpen(false)}
+              >
+                <Icon name="close" size={24} color={colors.subtitle} />
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
-              <View style={styles.formGroup}>
-                <Text style={styles.label}>Goal Name</Text>
-                <TextInput
-                  placeholder="What are you saving for?"
-                  value={draft?.name ?? ""}
-                  onChangeText={(text) => setDraft(prev => ({ ...prev, name: text }))}
-                  style={styles.input}
-                  placeholderTextColor="#94a3b8"
-                />
-              </View>
+            <ScrollView 
+              style={styles.modalContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={[styles.label, { color: colors.text }]}>Goal Name *</Text>
+              <TextInput
+                placeholder="What are you saving for?"
+                placeholderTextColor={colors.subtitle}
+                value={draft?.name ?? ""}
+                onChangeText={(t) => setDraft((p) => ({ ...p, name: t }))}
+                style={[
+                  styles.input,
+                  { 
+                    backgroundColor: colors.background, 
+                    color: colors.text, 
+                    borderColor: colors.border 
+                  },
+                ]}
+              />
 
-              <View style={styles.formGroup}>
-                <Text style={styles.label}>Target Amount</Text>
-                <View style={styles.amountInputContainer}>
-                  <Text style={styles.currencySymbol}>KES</Text>
-                  <TextInput
-                    placeholder="50000"
-                    keyboardType="numeric"
-                    value={draft?.target_amount?.toString() ?? ""}
-                    onChangeText={(text) => 
-                      setDraft(prev => ({ ...prev, target_amount: Number(text) || 0 }))
-                    }
-                    style={styles.amountInput}
-                    placeholderTextColor="#94a3b8"
-                  />
-                </View>
-              </View>
+              <Text style={[styles.label, { color: colors.text }]}>Target Amount (KSH) *</Text>
+              <TextInput
+                placeholder="How much do you need?"
+                placeholderTextColor={colors.subtitle}
+                value={draft?.target_amount?.toString() ?? ""}
+                onChangeText={(t) => setDraft((p) => ({ ...p, target_amount: Number(t) }))}
+                style={[
+                  styles.input,
+                  { 
+                    backgroundColor: colors.background, 
+                    color: colors.text, 
+                    borderColor: colors.border 
+                  },
+                ]}
+                keyboardType="numeric"
+              />
 
-              <View style={styles.formGroup}>
-                <Text style={styles.label}>Currently Saved</Text>
-                <View style={styles.amountInputContainer}>
-                  <Text style={styles.currencySymbol}>KES</Text>
-                  <TextInput
-                    placeholder="0"
-                    keyboardType="numeric"
-                    value={draft?.saved_amount?.toString() ?? "0"}
-                    onChangeText={(text) => 
-                      setDraft(prev => ({ ...prev, saved_amount: Number(text) || 0 }))
-                    }
-                    style={styles.amountInput}
-                    placeholderTextColor="#94a3b8"
-                  />
-                </View>
-              </View>
+              <Text style={[styles.label, { color: colors.text }]}>Current Savings (KSH)</Text>
+              <TextInput
+                placeholder="Amount already saved"
+                placeholderTextColor={colors.subtitle}
+                value={draft?.saved_amount?.toString() ?? ""}
+                onChangeText={(t) => setDraft((p) => ({ ...p, saved_amount: Number(t) }))}
+                style={[
+                  styles.input,
+                  { 
+                    backgroundColor: colors.background, 
+                    color: colors.text, 
+                    borderColor: colors.border 
+                  },
+                ]}
+                keyboardType="numeric"
+              />
 
-              <View style={styles.formGroup}>
-                <Text style={styles.label}>Target Date (Optional)</Text>
-                <TouchableOpacity style={styles.dateInput} onPress={showDatepicker}>
-                  <Icon name="calendar" size={20} color="#64748b" />
-                  <Text style={styles.dateText}>
-                    {draft?.deadline ? new Date(draft.deadline).toLocaleDateString() : 'Select a date'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {showDatePicker && (
-                <DateTimePicker
-                  value={selectedDate}
-                  mode="date"
-                  display="default"
-                  onChange={onDateChange}
-                  minimumDate={new Date()}
-                />
-              )}
-            </ScrollView>
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.cancelButton]} 
-                onPress={() => {
-                  setOpen(false);
-                  setDraft(null);
-                }}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.modalButton, styles.saveButton]} 
+              <TouchableOpacity
+                style={[styles.saveButton, { backgroundColor: colors.primary }]}
                 onPress={save}
               >
                 <Text style={styles.saveButtonText}>
                   {draft?.id ? "Update Goal" : "Create Goal"}
                 </Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PAYMENT MODAL */}
+      <Modal visible={paymentModal.visible} animationType="slide" transparent statusBarTranslucent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContainer, { backgroundColor: colors.cardBackground }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                Pay to {paymentModal.goal?.name}
+              </Text>
+              <TouchableOpacity 
+                style={styles.closeButton}
+                onPress={() => setPaymentModal({
+                  visible: false,
+                  goal: null,
+                  amount: "",
+                  phone: "",
+                  loading: false,
+                  error: "",
+                })}
+              >
+                <Icon name="close" size={24} color={colors.subtitle} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView 
+              style={styles.modalContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {paymentModal.error ? (
+                <View style={[styles.errorBanner, { backgroundColor: `${colors.danger}15` }]}>
+                  <Icon name="alert-circle" size={20} color={colors.danger} />
+                  <Text style={[styles.errorText, { color: colors.danger }]}>
+                    {paymentModal.error}
+                  </Text>
+                </View>
+              ) : null}
+
+              <Text style={[styles.label, { color: colors.text }]}>
+                MPESA Phone Number *
+              </Text>
+              <TextInput
+                placeholder="07XX XXX XXX"
+                placeholderTextColor={colors.subtitle}
+                value={paymentModal.phone}
+                onChangeText={(text) => setPaymentModal(prev => ({ ...prev, phone: text, error: "" }))}
+                style={[
+                  styles.input,
+                  { 
+                    backgroundColor: colors.background, 
+                    color: colors.text, 
+                    borderColor: paymentModal.error ? colors.danger : colors.border 
+                  },
+                ]}
+                keyboardType="phone-pad"
+              />
+
+              <Text style={[styles.label, { color: colors.text }]}>
+                Amount (KSH) *
+              </Text>
+              <TextInput
+                placeholder="Enter amount"
+                placeholderTextColor={colors.subtitle}
+                value={paymentModal.amount}
+                onChangeText={(text) => setPaymentModal(prev => ({ ...prev, amount: text, error: "" }))}
+                style={[
+                  styles.input,
+                  { 
+                    backgroundColor: colors.background, 
+                    color: colors.text, 
+                    borderColor: paymentModal.error ? colors.danger : colors.border 
+                  },
+                ]}
+                keyboardType="numeric"
+              />
+
+              <View style={[styles.infoBox, { backgroundColor: `${colors.primary}10` }]}>
+                <Text style={[styles.infoTitle, { color: colors.primary }]}>
+                  Real MPESA Payment
+                </Text>
+                <View style={styles.infoItem}>
+                  <Icon name="check-circle" size={16} color={colors.primary} />
+                  <Text style={[styles.infoText, { color: colors.text }]}>
+                    You'll receive an MPESA prompt on your phone
+                  </Text>
+                </View>
+                <View style={styles.infoItem}>
+                  <Icon name="check-circle" size={16} color={colors.primary} />
+                  <Text style={[styles.infoText, { color: colors.text }]}>
+                    Enter your MPESA PIN to complete payment
+                  </Text>
+                </View>
+                <View style={styles.infoItem}>
+                  <Icon name="check-circle" size={16} color={colors.primary} />
+                  <Text style={[styles.infoText, { color: colors.text }]}>
+                    Payment will be automatically added to your goal
+                  </Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.saveButton, 
+                  { 
+                    backgroundColor: paymentModal.loading ? colors.subtitle : colors.primary,
+                    opacity: paymentModal.loading ? 0.7 : 1
+                  }
+                ]}
+                onPress={makePaymentToGoal}
+                disabled={paymentModal.loading}
+              >
+                {paymentModal.loading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Icon name="cellphone" size={20} color="#fff" />
+                    <Text style={styles.saveButtonText}>
+                      Pay KSH {paymentModal.amount || "0"}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MANUAL ADD MODAL */}
+      <Modal visible={manualAddModal.visible} animationType="slide" transparent statusBarTranslucent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContainer, { backgroundColor: colors.cardBackground }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                Add to {manualAddModal.goal?.name}
+              </Text>
+              <TouchableOpacity 
+                style={styles.closeButton}
+                onPress={() => setManualAddModal({
+                  visible: false,
+                  goal: null,
+                  amount: "",
+                  loading: false,
+                  error: "",
+                })}
+              >
+                <Icon name="close" size={24} color={colors.subtitle} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView 
+              style={styles.modalContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {manualAddModal.error ? (
+                <View style={[styles.errorBanner, { backgroundColor: `${colors.danger}15` }]}>
+                  <Icon name="alert-circle" size={20} color={colors.danger} />
+                  <Text style={[styles.errorText, { color: colors.danger }]}>
+                    {manualAddModal.error}
+                  </Text>
+                </View>
+              ) : null}
+
+              <Text style={[styles.label, { color: colors.text }]}>
+                Amount (KSH) *
+              </Text>
+              <TextInput
+                placeholder="Enter amount to add"
+                placeholderTextColor={colors.subtitle}
+                value={manualAddModal.amount}
+                onChangeText={(text) => setManualAddModal(prev => ({ ...prev, amount: text, error: "" }))}
+                style={[
+                  styles.input,
+                  { 
+                    backgroundColor: colors.background, 
+                    color: colors.text, 
+                    borderColor: manualAddModal.error ? colors.danger : colors.border 
+                  },
+                ]}
+                keyboardType="numeric"
+              />
+
+              <View style={[styles.infoBox, { backgroundColor: `${colors.primary}10` }]}>
+                <Text style={[styles.infoText, { color: colors.text }]}>
+                  This will manually add the amount to your goal savings. Use this for cash deposits or bank transfers.
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.saveButton, 
+                  { 
+                    backgroundColor: manualAddModal.loading ? colors.subtitle : colors.primary,
+                    opacity: manualAddModal.loading ? 0.7 : 1
+                  }
+                ]}
+                onPress={handleManualAdd}
+                disabled={manualAddModal.loading}
+              >
+                {manualAddModal.loading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Icon name="plus-circle" size={20} color="#fff" />
+                    <Text style={styles.saveButtonText}>
+                      Add KSH {manualAddModal.amount || "0"}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PAYMENT HISTORY MODAL */}
+      <Modal visible={paymentHistoryModal.visible} animationType="slide" transparent statusBarTranslucent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContainer, { backgroundColor: colors.cardBackground }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                Payment History - {paymentHistoryModal.goal?.name}
+              </Text>
+              <TouchableOpacity 
+                style={styles.closeButton}
+                onPress={() => setPaymentHistoryModal({
+                  visible: false,
+                  goal: null,
+                  payments: [],
+                  loading: false,
+                })}
+              >
+                <Icon name="close" size={24} color={colors.subtitle} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalContent}>
+              {paymentHistoryModal.loading ? (
+                <View style={styles.loadingPaymentHistory}>
+                  <ActivityIndicator size="large" color={colors.primary} />
+                  <Text style={[styles.loadingText, { color: colors.text }]}>
+                    Loading payment history...
+                  </Text>
+                </View>
+              ) : paymentHistoryModal.payments.length === 0 ? (
+                <View style={styles.emptyPaymentHistory}>
+                  <Icon name="receipt" size={64} color={colors.subtitle} />
+                  <Text style={[styles.emptyTitle, { color: colors.text }]}>
+                    No payments yet
+                  </Text>
+                  <Text style={[styles.emptyText, { color: colors.subtitle }]}>
+                    Make your first payment to see the history here
+                  </Text>
+                </View>
+              ) : (
+                <FlatList
+                  data={paymentHistoryModal.payments}
+                  renderItem={renderPaymentItem}
+                  keyExtractor={(item) => item.id}
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.paymentList}
+                />
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* PAYMENT SUCCESS MODAL */}
+      <Modal visible={paymentSuccess.visible} animationType="fade" transparent statusBarTranslucent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.successModalContainer, { backgroundColor: colors.cardBackground }]}>
+            <View style={styles.successIcon}>
+              <Icon name="check-circle" size={80} color="#10b981" />
+            </View>
+            
+            <Text style={[styles.successTitle, { color: colors.text }]}>
+              Payment Successful! 🎉
+            </Text>
+            
+            <Text style={[styles.successMessage, { color: colors.subtitle }]}>
+              Your payment of {formatCurrency(paymentSuccess.amount)} has been successfully added to:
+            </Text>
+            
+            <Text style={[styles.successGoalName, { color: colors.primary }]}>
+              "{paymentSuccess.goalName}"
+            </Text>
+            
+            {paymentSuccess.receipt && paymentSuccess.receipt !== 'Unknown' && (
+              <View style={styles.receiptContainer}>
+                <Text style={[styles.receiptLabel, { color: colors.subtitle }]}>
+                  MPESA Receipt:
+                </Text>
+                <Text style={[styles.receiptNumber, { color: colors.text }]}>
+                  {paymentSuccess.receipt}
+                </Text>
+              </View>
+            )}
+
+            <View style={styles.successNote}>
+              <Icon name="information" size={16} color={colors.primary} />
+              <Text style={[styles.successNoteText, { color: colors.subtitle }]}>
+                Your goal has been updated automatically
+              </Text>
+            </View>
+            
+            <View style={styles.successButtons}>
+              <TouchableOpacity
+                style={[styles.successButton, { backgroundColor: colors.primary }]}
+                onPress={closeSuccessModal}
+              >
+                <Text style={styles.successButtonText}>Continue</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.successButton, { backgroundColor: '#6b7280' }]}
+                onPress={viewGoalDetails}
+              >
+                <Text style={styles.successButtonText}>View Details</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -550,223 +1441,243 @@ export default function GoalsScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { 
-    flex: 1, 
-    backgroundColor: '#f8fafc', 
+  container: {
+    flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    fontWeight: '600',
   },
   header: {
-    backgroundColor: '#fff',
-    paddingHorizontal: spacing.lg || 24,
     paddingTop: 60,
-    paddingBottom: spacing.lg || 24,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.1,
     shadowRadius: 8,
-    elevation: 3,
+    elevation: 4,
+  },
+  headerContent: {
+    marginBottom: 16,
   },
   headerTitle: {
     fontSize: 28,
-    fontWeight: '800',
-    color: '#0f172a',
+    fontWeight: "800",
     marginBottom: 4,
   },
   headerSubtitle: {
     fontSize: 16,
-    color: '#64748b',
-    marginBottom: spacing.md || 16,
+    fontWeight: "500",
+  },
+  headerButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  overallProgress: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 16,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.05)',
+  },
+  overallProgressText: {
+    flex: 1,
+  },
+  overallAmount: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  overallTarget: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  overallPercentage: {
+    fontSize: 20,
+    fontWeight: '800',
   },
   addButton: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 8,
-    backgroundColor: '#667eea',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
     borderRadius: 12,
-    alignSelf: 'flex-start',
-    shadowColor: '#667eea',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
   },
   addButtonText: {
     color: "#fff",
     fontWeight: "700",
     fontSize: 16,
   },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: spacing.lg || 24,
-    margin: spacing.lg || 24,
-    marginBottom: spacing.md || 16,
+  statsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    marginBottom: 16,
+  },
+  statCard: {
+    flex: 1,
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    marginHorizontal: 6,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
-    shadowRadius: 12,
-    elevation: 5,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  statNumber: {
+    fontSize: 20,
+    fontWeight: '800',
+    marginVertical: 4,
+  },
+  statLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  listContent: {
+    paddingVertical: 16,
+    paddingHorizontal: 8,
+    flexGrow: 1,
+  },
+  card: {
+    borderRadius: 16,
+    padding: 20,
+    marginHorizontal: 12,
+    marginVertical: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
   },
   cardHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
     marginBottom: 16,
   },
-  goalIconContainer: {
-    marginRight: 12,
-  },
   iconCircle: {
     width: 50,
     height: 50,
     borderRadius: 25,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
   },
-  goalInfo: {
+  cardContent: {
     flex: 1,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
   },
   title: {
     fontWeight: "700",
     fontSize: 18,
-    color: '#0f172a',
-    marginBottom: 4,
+    flex: 1,
+  },
+  completedBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 8,
+  },
+  completedText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
   },
   amount: {
-    fontWeight: "700",
-    color: '#0f172a',
+    fontWeight: "600",
     fontSize: 16,
+    marginBottom: 4,
+  },
+  progressText: {
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  menuButton: {
+    padding: 4,
+    marginLeft: 8,
   },
   progressSection: {
     marginBottom: 16,
   },
-  progressHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 8,
-  },
-  progressText: {
-    fontSize: 14,
-    color: '#64748b',
-    fontWeight: '600',
-  },
-  percentage: {
-    fontWeight: "700",
-    color: '#0f172a',
-    fontSize: 14,
-  },
   progressWrap: {
     height: 8,
     borderRadius: 4,
-    backgroundColor: "#e2e8f0",
+    backgroundColor: '#f1f5f9',
     overflow: "hidden",
   },
   progressFill: {
     height: 8,
     borderRadius: 4,
   },
-  cardFooter: {
-    marginBottom: 8,
-  },
-  footerInfo: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  deadlineContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  deadline: {
-    color: '#64748b',
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  statusIndicator: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  statusText: {
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '500',
-  },
   actions: {
     flexDirection: "row",
     gap: 8,
-    marginTop: 16,
   },
   actionBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
+    justifyContent: "center",
     flex: 1,
-    justifyContent: 'center',
-  },
-  addMoneyBtn: {
-    backgroundColor: '#667eea',
-  },
-  editBtn: {
-    backgroundColor: '#10b981',
-  },
-  deleteBtn: {
-    backgroundColor: "#ef4444",
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 10,
   },
   btnText: {
     color: "#fff",
     fontWeight: "700",
     fontSize: 12,
   },
-  listContent: {
-    flexGrow: 1,
-  },
-  emptyState: {
-    alignItems: 'center',
-    padding: 40,
-    marginTop: 40,
-  },
-  emptyIllustration: {
-    marginBottom: 24,
+  emptyContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 80,
+    paddingHorizontal: 40,
   },
   emptyTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#0f172a',
+    fontSize: 24,
+    fontWeight: "700",
+    marginTop: 16,
     marginBottom: 8,
     textAlign: 'center',
   },
-  emptySubtitle: {
+  emptyText: {
     fontSize: 16,
-    color: '#64748b',
-    textAlign: 'center',
-    marginBottom: 32,
-    lineHeight: 24,
+    textAlign: "center",
+    marginBottom: 24,
+    lineHeight: 22,
   },
-  createFirstButton: {
-    backgroundColor: '#667eea',
-    paddingHorizontal: 32,
-    paddingVertical: 16,
+  emptyButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     borderRadius: 12,
-    shadowColor: '#667eea',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
   },
-  createFirstText: {
+  emptyButtonText: {
     color: "#fff",
     fontWeight: "700",
     fontSize: 16,
@@ -777,119 +1688,229 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   modalContainer: {
-    backgroundColor: "#fff",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: '90%',
+    maxHeight: "90%",
   },
   modalHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: spacing.lg || 24,
+    padding: 20,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
+    borderBottomColor: '#f1f5f9',
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: "800",
-    color: '#0f172a',
   },
   closeButton: {
     padding: 4,
   },
   modalContent: {
-    padding: spacing.lg || 24,
-  },
-  formGroup: {
-    marginBottom: spacing.lg || 24,
-  },
-  label: {
-    fontWeight: "700",
-    color: '#0f172a',
-    marginBottom: 8,
-    fontSize: 16,
+    padding: 20,
   },
   input: {
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
+    borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 14,
-    backgroundColor: "#fff",
     fontSize: 16,
-    color: '#0f172a',
+    marginBottom: 16,
   },
-  amountInputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
-    borderRadius: 12,
-    backgroundColor: '#fff',
-    paddingHorizontal: 16,
-  },
-  currencySymbol: {
+  label: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#64748b',
-    marginRight: 8,
-  },
-  amountInput: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0f172a',
-    paddingVertical: 14,
-  },
-  dateInput: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    backgroundColor: "#fff",
-  },
-  dateText: {
-    fontSize: 16,
-    color: '#0f172a',
-  },
-  modalActions: {
-    flexDirection: "row",
-    gap: 12,
-    padding: spacing.lg || 24,
-    borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-  },
-  modalButton: {
-    flex: 1,
-    paddingVertical: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cancelButton: {
-    backgroundColor: '#f1f5f9',
+    fontWeight: "700",
+    marginBottom: 8,
   },
   saveButton: {
-    backgroundColor: '#667eea',
-    shadowColor: '#667eea',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  cancelButtonText: {
-    color: '#64748b',
-    fontWeight: "700",
-    fontSize: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 12,
+    marginTop: 8,
   },
   saveButtonText: {
     color: "#fff",
     fontWeight: "700",
+    fontSize: 16,
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  errorText: {
+    fontSize: 14,
+    fontWeight: "600",
+    flex: 1,
+  },
+  infoBox: {
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+  },
+  infoTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  infoItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 6,
+  },
+  infoText: {
+    fontSize: 14,
+    flex: 1,
+  },
+  // Payment History Styles
+  loadingPaymentHistory: {
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 40,
+  },
+  emptyPaymentHistory: {
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 40,
+  },
+  paymentList: {
+    paddingBottom: 20,
+  },
+  paymentItem: {
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  paymentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  paymentAmount: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  paymentAmountText: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  statusText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  paymentDate: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  paymentDetails: {
+    gap: 4,
+  },
+  paymentPhone: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  paymentReceipt: {
+    fontSize: 12,
+    fontWeight: '400',
+  },
+  // Success Modal Styles
+  successModalContainer: {
+    margin: 20,
+    borderRadius: 20,
+    padding: 30,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  successIcon: {
+    marginBottom: 20,
+  },
+  successTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  successMessage: {
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 8,
+    lineHeight: 22,
+  },
+  successGoalName: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  receiptContainer: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+    alignSelf: 'stretch',
+  },
+  receiptLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  receiptNumber: {
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  successNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 20,
+    padding: 8,
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    borderRadius: 8,
+  },
+  successNoteText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  successButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+  },
+  successButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  successButtonText: {
+    color: '#fff',
+    fontWeight: '700',
     fontSize: 16,
   },
 });

@@ -18,8 +18,9 @@ import {
   Dimensions,
 } from "react-native";
 import { supabase } from "../supabaseClient";
-import { colors, spacing, radius } from "../constants/styles";
+import { spacing, radius } from "../constants/styles";
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { useTheme } from "../hooks/useTheme";
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -81,8 +82,8 @@ type Transaction = {
   category?: string;
 };
 
-// Utility Functions
-const currency = (n: number) => `KES ${Number(n).toLocaleString()}`;
+// Utility Functions - CHANGED: KES to KSH
+const currency = (n: number) => `KSH ${Number(n).toLocaleString()}`;
 
 // Kenyan-specific transaction patterns
 const CATEGORY_KEYWORDS = {
@@ -227,7 +228,7 @@ function AnimatedProgressBar({ pct, tint, showWarning = false }: {
           styles.progressFill,
           { 
             width: widthInterpolate,
-            backgroundColor: isOverBudget ? '#EF4444' : (tint || colors.primary),
+            backgroundColor: isOverBudget ? '#EF4444' : (tint || '#3B82F6'),
           },
         ]}
       />
@@ -242,7 +243,7 @@ function AnimatedProgressBar({ pct, tint, showWarning = false }: {
 function CategoryIcon({ category, size = 24 }: { category: string; size?: number }) {
   const categoryData = CATEGORIES_WITH_ICONS.find(cat => 
     cat.name.toLowerCase() === category.toLowerCase()
-  ) || { icon: 'tag', color: colors.primary };
+  ) || { icon: 'tag', color: '#3B82F6' };
 
   return (
     <View style={[styles.categoryIcon, { backgroundColor: `${categoryData.color}15` }]}>
@@ -253,6 +254,8 @@ function CategoryIcon({ category, size = 24 }: { category: string; size?: number
 
 // Component: Financial Health Score Card
 function FinancialHealthScoreCard({ health }: { health: FinancialHealthScore }) {
+  const { colors } = useTheme();
+  
   const getScoreColor = (score: number) => {
     if (score >= 80) return '#10B981';
     if (score >= 60) return '#F59E0B';
@@ -261,9 +264,9 @@ function FinancialHealthScoreCard({ health }: { health: FinancialHealthScore }) 
   };
 
   return (
-    <View style={styles.healthScoreCard}>
+    <View style={[styles.healthScoreCard, { backgroundColor: colors.cardBackground, borderColor: colors.border }]}>
       <View style={styles.healthHeader}>
-        <Text style={styles.healthTitle}>Financial Health Score</Text>
+        <Text style={[styles.healthTitle, { color: colors.text }]}>Financial Health Score</Text>
         <View style={[styles.scoreBadge, { backgroundColor: getScoreColor(health.score) }]}>
           <Text style={styles.scoreText}>{health.score}</Text>
         </View>
@@ -276,19 +279,19 @@ function FinancialHealthScoreCard({ health }: { health: FinancialHealthScore }) 
         <View style={styles.insightsContainer}>
           {health.insights.map((insight, index) => (
             <View key={index} style={styles.insightItem}>
-              <Icon name="information" size={16} color="#6B7280" />
-              <Text style={styles.insightText}>{insight}</Text>
+              <Icon name="information" size={16} color={colors.subtitle} />
+              <Text style={[styles.insightText, { color: colors.subtitle }]}>{insight}</Text>
             </View>
           ))}
         </View>
       )}
       
-      <View style={styles.recommendationsContainer}>
-        <Text style={styles.recommendationsTitle}>Recommendations</Text>
+      <View style={[styles.recommendationsContainer, { backgroundColor: colors.background }]}>
+        <Text style={[styles.recommendationsTitle, { color: colors.text }]}>Recommendations</Text>
         {health.recommendations.map((rec, index) => (
           <View key={index} style={styles.recommendationItem}>
             <Icon name="lightbulb" size={14} color="#F59E0B" />
-            <Text style={styles.recommendationText}>{rec}</Text>
+            <Text style={[styles.recommendationText, { color: colors.subtitle }]}>{rec}</Text>
           </View>
         ))}
       </View>
@@ -296,69 +299,79 @@ function FinancialHealthScoreCard({ health }: { health: FinancialHealthScore }) 
   );
 }
 
-// Component: Categorization Helper
-function CategorizationHelper({ transactions, onCategorize, onClose }: {
-  transactions: Transaction[];
-  onCategorize: (transactionId: string, category: string) => void;
+// Component: Manual Spending Input Modal
+function ManualSpendingModal({
+  visible,
+  category,
+  currentSpent,
+  onSave,
+  onClose,
+}: {
+  visible: boolean;
+  category: string;
+  currentSpent: number;
+  onSave: (amount: number) => void;
   onClose: () => void;
 }) {
-  const [uncategorized, setUncategorized] = useState<Transaction[]>([]);
+  const { colors } = useTheme();
+  const [amount, setAmount] = useState(currentSpent.toString());
 
-  useEffect(() => {
-    const uncategorizedTx = transactions.filter(t => 
-      t.type === 'expense' && (!t.category || t.category === 'Uncategorized')
-    ).slice(0, 5);
-    setUncategorized(uncategorizedTx);
-  }, [transactions]);
-
-  if (uncategorized.length === 0) return null;
+  const handleSave = () => {
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount < 0) {
+      Alert.alert("Invalid Amount", "Please enter a valid positive number");
+      return;
+    }
+    onSave(parsedAmount);
+    onClose();
+  };
 
   return (
-    <View style={styles.categorizationHelper}>
-      <View style={styles.helperHeader}>
-        <Text style={styles.helperTitle}>Categorize Your Spending</Text>
-        <TouchableOpacity onPress={onClose}>
-          <Icon name="close" size={20} color={colors.text} />
-        </TouchableOpacity>
-      </View>
-      <Text style={styles.helperText}>
-        Help us understand your spending by categorizing transactions
-      </Text>
-      
-      <ScrollView style={styles.uncategorizedList} horizontal showsHorizontalScrollIndicator={false}>
-        {uncategorized.map(tx => (
-          <View key={tx.id} style={styles.uncategorizedCard}>
-            <Text style={styles.txDescription} numberOfLines={2}>
-              {tx.description}
-            </Text>
-            <Text style={styles.txAmount}>{currency(tx.amount)}</Text>
-            
-            <View style={styles.categoryButtons}>
-              {['Food & Dining', 'Transport', 'Shopping', 'Bills', 'Entertainment'].map(cat => (
-                <TouchableOpacity
-                  key={cat}
-                  style={styles.categoryButton}
-                  onPress={() => onCategorize(tx.id, cat)}
-                >
-                  <Text style={styles.categoryButtonText}>{cat}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+    <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={styles.sheetWrap}
+        behavior={Platform.select({ ios: "padding", android: undefined })}
+      >
+        <View style={[styles.sheet, { backgroundColor: colors.cardBackground }]}>
+          <View style={styles.sheetHeader}>
+            <Text style={[styles.sheetTitle, { color: colors.text }]}>Add Manual Spending</Text>
+            <TouchableOpacity onPress={onClose}>
+              <Icon name="close" size={24} color={colors.text} />
+            </TouchableOpacity>
           </View>
-        ))}
-      </ScrollView>
-    </View>
+
+          <View style={styles.modalContent}>
+            <Text style={[styles.label, { color: colors.text }]}>Category: {category}</Text>
+            
+            <Text style={[styles.label, { color: colors.text }]}>Amount Spent (KSH)</Text>
+            <TextInput
+              style={[styles.input, { backgroundColor: colors.background, borderColor: colors.border, color: colors.text }]}
+              placeholder="Enter amount spent"
+              placeholderTextColor={colors.subtitle}
+              keyboardType="numeric"
+              value={amount}
+              onChangeText={setAmount}
+            />
+
+            <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: colors.primary }]} onPress={handleSave}>
+              <Text style={styles.primaryBtnText}>Save Spending</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
   );
 }
 
 // Component: Behavioral Budget Card
-function BehavioralBudgetCard({ item, spend, transactions, onEdit, onDelete }: { 
+function BehavioralBudgetCard({ item, spend, onEdit, onDelete, onAddSpending }: { 
   item: BudgetRow; 
   spend: SpendByCategory;
-  transactions: Transaction[];
   onEdit: (budget: BudgetRow) => void;
   onDelete: (budget: BudgetRow) => void;
+  onAddSpending: (category: string, amount: number) => void;
 }) {
+  const { colors } = useTheme();
   const spent = spend[item.category] || 0;
   const limit = item.amount;
   const pct = limit > 0 ? (spent / limit) * 100 : 0;
@@ -419,15 +432,11 @@ function BehavioralBudgetCard({ item, spend, transactions, onEdit, onDelete }: {
   const insight = getBehavioralInsight();
   const tint = isOverBudget ? '#EF4444' : pct >= 80 ? '#F59E0B' : '#10B981';
 
-  // Calculate how many transactions contribute to this category
-  const categoryTransactions = transactions.filter(t => 
-    t.category === item.category && t.type === 'expense'
-  ).length;
-
   return (
     <TouchableOpacity 
       style={[
         styles.budgetCard,
+        { backgroundColor: colors.cardBackground, borderColor: colors.border },
         isOverBudget && styles.overBudgetCard
       ]}
       onPress={() => onEdit(item)}
@@ -437,22 +446,28 @@ function BehavioralBudgetCard({ item, spend, transactions, onEdit, onDelete }: {
         <View style={styles.categoryRow}>
           <CategoryIcon category={item.category} />
           <View style={styles.categoryInfo}>
-            <Text style={styles.budgetTitle}>{item.category}</Text>
-            <Text style={styles.transactionCount}>
-              {categoryTransactions} transactions • {currency(spent)} spent
+            <Text style={[styles.budgetTitle, { color: colors.text }]}>{item.category}</Text>
+            <Text style={[styles.transactionCount, { color: colors.subtitle }]}>
+              {currency(spent)} spent
             </Text>
           </View>
         </View>
         
         <View style={styles.budgetActions}>
           <TouchableOpacity 
-            style={styles.actionButton}
-            onPress={() => onEdit(item)}
+            style={[styles.actionButton, { backgroundColor: colors.background }]}
+            onPress={() => onAddSpending(item.category, spent)}
           >
-            <Icon name="pencil" size={16} color={colors.muted} />
+            <Icon name="plus-circle" size={16} color={colors.primary} />
           </TouchableOpacity>
           <TouchableOpacity 
-            style={styles.actionButton}
+            style={[styles.actionButton, { backgroundColor: colors.background }]}
+            onPress={() => onEdit(item)}
+          >
+            <Icon name="pencil" size={16} color={colors.subtitle} />
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={[styles.actionButton, { backgroundColor: colors.background }]}
             onPress={() => onDelete(item)}
           >
             <Icon name="delete" size={16} color="#EF4444" />
@@ -461,9 +476,9 @@ function BehavioralBudgetCard({ item, spend, transactions, onEdit, onDelete }: {
       </View>
       
       <View style={styles.amountRow}>
-        <Text style={styles.budgetAmounts}>
+        <Text style={[styles.budgetAmounts, { color: colors.text }]}>
           <Text style={{ color: tint, fontWeight: '800' }}>{currency(spent)}</Text>
-          <Text style={{ color: colors.muted }}> / {currency(limit)}</Text>
+          <Text style={{ color: colors.subtitle }}> / {currency(limit)}</Text>
         </Text>
         <Text style={[styles.percentText, { color: tint }]}>
           {isFinite(pct) ? `${Math.round(pct)}%` : "0%"}
@@ -473,7 +488,7 @@ function BehavioralBudgetCard({ item, spend, transactions, onEdit, onDelete }: {
       <AnimatedProgressBar pct={isFinite(pct) ? pct : 0} tint={tint} showWarning={true} />
       
       <View style={styles.budgetFooter}>
-        <Text style={[styles.remainingText, { color: colors.muted }]}>
+        <Text style={[styles.remainingText, { color: colors.subtitle }]}>
           {currency(remaining)} left
         </Text>
       </View>
@@ -504,8 +519,9 @@ function BehavioralBudgetCard({ item, spend, transactions, onEdit, onDelete }: {
   );
 }
 
-// Component: Financial Challenges
+// Component: Financial Challenges - REMOVED: Emoji from title
 function FinancialChallenges() {
+  const { colors } = useTheme();
   const [activeChallenges, setActiveChallenges] = useState<FinancialChallenge[]>([
     {
       id: '1',
@@ -519,7 +535,7 @@ function FinancialChallenges() {
     {
       id: '2', 
       title: 'Emergency Fund Builder',
-      description: 'Save KES 1000 for emergencies this month',
+      description: 'Save KSH 1000 for emergencies this month',
       reward: 'Financial security habit',
       progress: 0,
       target: 1000,
@@ -548,20 +564,20 @@ function FinancialChallenges() {
 
   return (
     <View style={styles.challengesSection}>
-      <Text style={styles.sectionTitle}>🎯 Financial Challenges</Text>
+      <Text style={[styles.sectionTitle, { color: colors.text }]}>Financial Challenges</Text>
       {activeChallenges.map(challenge => (
         <TouchableOpacity 
           key={challenge.id} 
-          style={styles.challengeCard}
+          style={[styles.challengeCard, { backgroundColor: colors.cardBackground, borderColor: colors.border }]}
           onPress={() => completeChallenge(challenge.id)}
         >
           <View style={styles.challengeHeader}>
-            <Text style={styles.challengeTitle}>{challenge.title}</Text>
+            <Text style={[styles.challengeTitle, { color: colors.text }]}>{challenge.title}</Text>
             <View style={styles.rewardBadge}>
               <Text style={styles.rewardText}>★ {challenge.reward}</Text>
             </View>
           </View>
-          <Text style={styles.challengeDesc}>{challenge.description}</Text>
+          <Text style={[styles.challengeDesc, { color: colors.subtitle }]}>{challenge.description}</Text>
           <View style={styles.challengeProgress}>
             <View style={styles.progressBar}>
               <View 
@@ -571,13 +587,13 @@ function FinancialChallenges() {
                 ]} 
               />
             </View>
-            <Text style={styles.progressText}>
+            <Text style={[styles.progressText, { color: colors.subtitle }]}>
               {challenge.progress}/{challenge.target}
             </Text>
           </View>
           {challenge.progress < challenge.target && (
             <TouchableOpacity 
-              style={styles.completeButton}
+              style={[styles.completeButton, { backgroundColor: colors.primary }]}
               onPress={() => completeChallenge(challenge.id)}
             >
               <Text style={styles.completeButtonText}>Mark Complete</Text>
@@ -591,6 +607,8 @@ function FinancialChallenges() {
 
 // Component: Financial Education Tips
 function FinancialEducationTips({ budgets, spend }: { budgets: BudgetRow[]; spend: SpendByCategory }) {
+  const { colors } = useTheme();
+  
   const getContextualTips = (): EducationTip[] => {
     const tips: EducationTip[] = [];
     const totalSpent = Object.values(spend).reduce((sum, amount) => sum + amount, 0);
@@ -651,7 +669,7 @@ function FinancialEducationTips({ budgets, spend }: { budgets: BudgetRow[]; spen
 
   return (
     <View style={styles.tipsSection}>
-      <Text style={styles.sectionTitle}>💡 Smart Tips for You</Text>
+      <Text style={[styles.sectionTitle, { color: colors.text }]}>💡 Smart Tips for You</Text>
       {tips.map((tip, index) => (
         <View key={index} style={[
           styles.tipCard,
@@ -672,6 +690,8 @@ function FinancialEducationTips({ budgets, spend }: { budgets: BudgetRow[]; spen
 
 // Component: Predictive Insights
 function PredictiveInsights({ budgets, spend }: { budgets: BudgetRow[]; spend: SpendByCategory }) {
+  const { colors } = useTheme();
+  
   const getPredictiveInsights = (): PredictiveInsight[] => {
     const insights: PredictiveInsight[] = [];
     const today = new Date();
@@ -702,15 +722,15 @@ function PredictiveInsights({ budgets, spend }: { budgets: BudgetRow[]; spend: S
 
   return (
     <View style={styles.predictiveSection}>
-      <Text style={styles.sectionTitle}>🔮 Projected Insights</Text>
+      <Text style={[styles.sectionTitle, { color: colors.text }]}>🔮 Projected Insights</Text>
       {insights.map((insight, index) => (
-        <View key={index} style={styles.predictiveCard}>
+        <View key={index} style={[styles.predictiveCard, { backgroundColor: colors.cardBackground, borderColor: colors.border }]}>
           <Icon name="chart-timeline" size={20} color="#F59E0B" />
           <View style={styles.predictiveContent}>
-            <Text style={styles.predictiveText}>
+            <Text style={[styles.predictiveText, { color: colors.text }]}>
               {insight.category} may exceed budget by {currency(insight.projectedOverspend)}
             </Text>
-            <Text style={styles.predictiveSuggestion}>{insight.suggestion}</Text>
+            <Text style={[styles.predictiveSuggestion, { color: colors.subtitle }]}>{insight.suggestion}</Text>
           </View>
         </View>
       ))}
@@ -744,25 +764,28 @@ function BudgetModal({
   onSave: () => void;
   onClose: () => void;
 }) {
+  const { colors } = useTheme();
+
   return (
     <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView
         style={styles.sheetWrap}
         behavior={Platform.select({ ios: "padding", android: undefined })}
       >
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { backgroundColor: colors.cardBackground }]}>
           <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>{title}</Text>
+            <Text style={[styles.sheetTitle, { color: colors.text }]}>{title}</Text>
             <TouchableOpacity onPress={onClose}>
               <Icon name="close" size={24} color={colors.text} />
             </TouchableOpacity>
           </View>
 
           <ScrollView keyboardShouldPersistTaps="handled">
-            <Text style={styles.label}>Category</Text>
+            <Text style={[styles.label, { color: colors.text }]}>Category</Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, { backgroundColor: colors.background, borderColor: colors.border, color: colors.text }]}
               placeholder="e.g., Food & Dining"
+              placeholderTextColor={colors.subtitle}
               value={category}
               onChangeText={(text) => {
                 onCategoryChange(text);
@@ -772,7 +795,7 @@ function BudgetModal({
             />
 
             {showSuggestions && (
-              <View style={styles.suggestionsContainer}>
+              <View style={[styles.suggestionsContainer, { backgroundColor: colors.background, borderColor: colors.border }]}>
                 {CATEGORIES_WITH_ICONS
                   .filter(cat => 
                     cat.name.toLowerCase().includes(category.toLowerCase())
@@ -784,23 +807,24 @@ function BudgetModal({
                       onPress={() => onSelectCategory(cat.name)}
                     >
                       <CategoryIcon category={cat.name} size={20} />
-                      <Text style={styles.suggestionText}>{cat.name}</Text>
+                      <Text style={[styles.suggestionText, { color: colors.text }]}>{cat.name}</Text>
                     </TouchableOpacity>
                   ))
                 }
               </View>
             )}
 
-            <Text style={styles.label}>Monthly Limit (KES)</Text>
+            <Text style={[styles.label, { color: colors.text }]}>Monthly Limit (KSH)</Text>
             <TextInput
-              style={styles.input}
+              style={[styles.input, { backgroundColor: colors.background, borderColor: colors.border, color: colors.text }]}
               placeholder="e.g., 4000"
+              placeholderTextColor={colors.subtitle}
               keyboardType="numeric"
               value={amount}
               onChangeText={onAmountChange}
             />
 
-            <TouchableOpacity style={styles.primaryBtn} onPress={onSave}>
+            <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: colors.primary }]} onPress={onSave}>
               <Text style={styles.primaryBtnText}>Save Budget</Text>
             </TouchableOpacity>
           </ScrollView>
@@ -812,6 +836,7 @@ function BudgetModal({
 
 // Main Budgets Screen Component
 export default function BudgetsScreen() {
+  const { colors } = useTheme();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [budgets, setBudgets] = useState<BudgetRow[]>([]);
@@ -819,7 +844,10 @@ export default function BudgetsScreen() {
   const [categorizedSpend, setCategorizedSpend] = useState<SpendByCategory>({});
   const [modalOpen, setModalOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
+  const [spendingModalOpen, setSpendingModalOpen] = useState(false);
   const [selectedBudget, setSelectedBudget] = useState<BudgetRow | null>(null);
+  const [selectedCategoryForSpending, setSelectedCategoryForSpending] = useState("");
+  const [currentSpentAmount, setCurrentSpentAmount] = useState(0);
   const [newCategory, setNewCategory] = useState("");
   const [newAmount, setNewAmount] = useState("");
   const [showCategorySuggestions, setShowCategorySuggestions] = useState(false);
@@ -1063,6 +1091,25 @@ export default function BudgetsScreen() {
     );
   };
 
+  // ADDED: Function to handle manual spending input
+  const addManualSpending = (category: string, currentSpent: number) => {
+    setSelectedCategoryForSpending(category);
+    setCurrentSpentAmount(currentSpent);
+    setSpendingModalOpen(true);
+  };
+
+  // ADDED: Function to save manual spending
+  const saveManualSpending = async (amount: number) => {
+    // Since we can't link to transactions, we'll store manual spending in a simple way
+    // In a real app, you might want to store this in a separate table
+    setCategorizedSpend(prev => ({
+      ...prev,
+      [selectedCategoryForSpending]: amount
+    }));
+    
+    Alert.alert("Success", `Updated ${selectedCategoryForSpending} spending to ${currency(amount)}`);
+  };
+
   const openEditModal = (budget: BudgetRow) => {
     setSelectedBudget(budget);
     setNewCategory(budget.category);
@@ -1105,23 +1152,23 @@ export default function BudgetsScreen() {
 
   if (!currentUser && loading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" />
-        <Text style={{ marginTop: 16, color: colors.muted }}>Checking authentication...</Text>
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={{ marginTop: 16, color: colors.subtitle }}>Checking authentication...</Text>
       </View>
     );
   }
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <View style={styles.header}>
-        <Text style={styles.screenTitle}>Budget Management</Text>
-        <Text style={styles.headerSubtitle}>Track and improve your financial health</Text>
+      <View style={[styles.header, { backgroundColor: colors.cardBackground, borderBottomColor: colors.border }]}>
+        <Text style={[styles.screenTitle, { color: colors.text }]}>Budget Management</Text>
+        <Text style={[styles.headerSubtitle, { color: colors.subtitle }]}>Track and improve your financial health</Text>
       </View>
 
       {!currentUser && (
-        <View style={styles.warningCard}>
-          <Text style={styles.warningText}>
+        <View style={[styles.warningCard, { backgroundColor: '#FEF3C7', borderColor: '#F59E0B' }]}>
+          <Text style={[styles.warningText, { color: '#92400E' }]}>
             Please sign in to manage your budgets
           </Text>
         </View>
@@ -1135,32 +1182,23 @@ export default function BudgetsScreen() {
             }
             showsVerticalScrollIndicator={false}
           >
-            {/* Categorization Helper */}
-            {showCategorizationHelper && (
-              <CategorizationHelper
-                transactions={transactions}
-                onCategorize={categorizeTransaction}
-                onClose={() => setShowCategorizationHelper(false)}
-              />
-            )}
-
             {/* Financial Health Score */}
             <FinancialHealthScoreCard health={financialHealth} />
 
             {/* Totals Overview */}
-            <View style={styles.totalsCard}>
-              <Text style={styles.totalsTitle}>Monthly Overview</Text>
+            <View style={[styles.totalsCard, { backgroundColor: colors.cardBackground, borderColor: colors.border }]}>
+              <Text style={[styles.totalsTitle, { color: colors.text }]}>Monthly Overview</Text>
               <View style={styles.totalsGrid}>
                 <View style={styles.totalItem}>
-                  <Text style={styles.totalLabel}>Total Budget</Text>
-                  <Text style={styles.totalValue}>{currency(totals.totalBudget)}</Text>
+                  <Text style={[styles.totalLabel, { color: colors.subtitle }]}>Total Budget</Text>
+                  <Text style={[styles.totalValue, { color: colors.text }]}>{currency(totals.totalBudget)}</Text>
                 </View>
                 <View style={styles.totalItem}>
-                  <Text style={styles.totalLabel}>Spent</Text>
-                  <Text style={styles.totalValue}>{currency(totals.spent)}</Text>
+                  <Text style={[styles.totalLabel, { color: colors.subtitle }]}>Spent</Text>
+                  <Text style={[styles.totalValue, { color: colors.text }]}>{currency(totals.spent)}</Text>
                 </View>
                 <View style={styles.totalItem}>
-                  <Text style={styles.totalLabel}>Remaining</Text>
+                  <Text style={[styles.totalLabel, { color: colors.subtitle }]}>Remaining</Text>
                   <Text style={[
                     styles.totalValue, 
                     { color: totals.remaining >= 0 ? "#10B981" : "#EF4444" }
@@ -1178,17 +1216,17 @@ export default function BudgetsScreen() {
             <FinancialEducationTips budgets={budgets} spend={categorizedSpend} />
 
             {/* Budget Categories Section */}
-            <Text style={styles.sectionTitle}>Your Budget Categories</Text>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Your Budget Categories</Text>
 
             {loading ? (
               <View style={{ padding: spacing.lg, alignItems: "center" }}>
-                <ActivityIndicator />
+                <ActivityIndicator color={colors.primary} />
               </View>
             ) : budgets.length === 0 ? (
               <View style={styles.emptyState}>
-                <Icon name="chart-pie" size={64} color={colors.muted} />
-                <Text style={styles.emptyStateTitle}>No budgets yet</Text>
-                <Text style={styles.emptyStateText}>
+                <Icon name="chart-pie" size={64} color={colors.subtitle} />
+                <Text style={[styles.emptyStateTitle, { color: colors.text }]}>No budgets yet</Text>
+                <Text style={[styles.emptyStateText, { color: colors.subtitle }]}>
                   Create your first budget to start tracking your spending and improve your financial health
                 </Text>
               </View>
@@ -1199,9 +1237,9 @@ export default function BudgetsScreen() {
                     key={budget.id}
                     item={budget}
                     spend={categorizedSpend}
-                    transactions={transactions}
                     onEdit={openEditModal}
                     onDelete={deleteBudget}
+                    onAddSpending={addManualSpending}
                   />
                 ))}
               </View>
@@ -1210,29 +1248,12 @@ export default function BudgetsScreen() {
             {/* Financial Challenges */}
             <FinancialChallenges />
 
-            {/* Spending Analysis Card */}
-            {transactions.length > 0 && (
-              <View style={styles.analysisCard}>
-                <Text style={styles.analysisTitle}>Spending Analysis</Text>
-                <View style={styles.analysisRow}>
-                  <View style={styles.analysisItem}>
-                    <Text style={styles.analysisLabel}>Total Transactions</Text>
-                    <Text style={styles.analysisValue}>{transactions.length}</Text>
-                  </View>
-                  <View style={styles.analysisItem}>
-                    <Text style={styles.analysisLabel}>Categorized</Text>
-                    <Text style={styles.analysisValue}>
-                      {Math.round((transactions.filter(t => t.category && t.category !== 'Uncategorized').length / transactions.length) * 100)}%
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            )}
+            {/* REMOVED: Spending Analysis Card */}
           </ScrollView>
 
           {/* Floating Action Button */}
           <TouchableOpacity 
-            style={styles.fab} 
+            style={[styles.fab, { backgroundColor: colors.primary }]} 
             onPress={() => {
               if (!currentUser) {
                 Alert.alert("Sign In Required", "Please sign in to create budgets");
@@ -1286,6 +1307,15 @@ export default function BudgetsScreen() {
           setShowCategorySuggestions(false);
         }}
       />
+
+      {/* ADDED: Manual Spending Modal */}
+      <ManualSpendingModal
+        visible={spendingModalOpen}
+        category={selectedCategoryForSpending}
+        currentSpent={currentSpentAmount}
+        onSave={saveManualSpending}
+        onClose={() => setSpendingModalOpen(false)}
+      />
     </View>
   );
 }
@@ -1293,46 +1323,37 @@ export default function BudgetsScreen() {
 // Styles
 const styles = StyleSheet.create({
   header: {
-    backgroundColor: '#fff',
     paddingHorizontal: spacing.md,
     paddingTop: 60,
     paddingBottom: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
   },
   screenTitle: {
     fontSize: 28,
     fontWeight: "800",
-    color: colors.text,
     marginBottom: 4,
   },
   headerSubtitle: {
     fontSize: 16,
-    color: colors.muted,
   },
   warningCard: {
-    backgroundColor: '#FEF3C7',
     marginHorizontal: spacing.md,
     borderRadius: 12,
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: '#F59E0B',
     marginBottom: spacing.md,
   },
   warningText: {
-    color: '#92400E',
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',
   },
   healthScoreCard: {
-    backgroundColor: "#fff",
-    marginHorizontal: spacing.md,
     borderRadius: 20,
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: "#EFEFEF",
     marginBottom: spacing.md,
+    marginHorizontal: spacing.md,
   },
   healthHeader: {
     flexDirection: 'row',
@@ -1343,7 +1364,6 @@ const styles = StyleSheet.create({
   healthTitle: {
     fontSize: 18,
     fontWeight: "700",
-    color: colors.text,
   },
   scoreBadge: {
     width: 50,
@@ -1372,19 +1392,16 @@ const styles = StyleSheet.create({
   },
   insightText: {
     fontSize: 14,
-    color: colors.muted,
     marginLeft: spacing.sm,
     flex: 1,
   },
   recommendationsContainer: {
-    backgroundColor: '#f8fafc',
     padding: spacing.md,
     borderRadius: 12,
   },
   recommendationsTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: colors.text,
     marginBottom: spacing.sm,
   },
   recommendationItem: {
@@ -1394,23 +1411,19 @@ const styles = StyleSheet.create({
   },
   recommendationText: {
     fontSize: 12,
-    color: colors.muted,
     marginLeft: spacing.sm,
     flex: 1,
   },
   totalsCard: {
-    backgroundColor: "#fff",
-    marginHorizontal: spacing.md,
     borderRadius: 20,
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: "#EFEFEF",
     marginBottom: spacing.md,
+    marginHorizontal: spacing.md,
   },
   totalsTitle: {
     fontSize: 18,
     fontWeight: "700",
-    color: colors.text,
     marginBottom: spacing.md,
   },
   totalsGrid: {
@@ -1423,20 +1436,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   totalLabel: {
-    color: colors.muted,
     fontSize: 12,
     marginBottom: 4,
     fontWeight: '600',
   },
   totalValue: {
-    color: colors.text,
     fontSize: 16,
     fontWeight: "800"
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "800",
-    color: colors.text,
     marginHorizontal: spacing.md,
     marginBottom: spacing.sm,
     marginTop: spacing.lg,
@@ -1446,11 +1456,9 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
   },
   budgetCard: {
-    backgroundColor: "#fff",
     borderRadius: 20,
     padding: spacing.lg,
     borderWidth: 1,
-    borderColor: "#EFEFEF",
     marginBottom: spacing.md,
   },
   overBudgetCard: {
@@ -1482,12 +1490,10 @@ const styles = StyleSheet.create({
   budgetTitle: {
     fontSize: 16,
     fontWeight: "700",
-    color: colors.text,
     marginBottom: 2
   },
   transactionCount: {
     fontSize: 12,
-    color: colors.muted,
   },
   budgetActions: {
     flexDirection: 'row',
@@ -1496,7 +1502,6 @@ const styles = StyleSheet.create({
   actionButton: {
     padding: 6,
     borderRadius: 6,
-    backgroundColor: '#f8fafc',
   },
   amountRow: {
     flexDirection: 'row',
@@ -1557,10 +1562,6 @@ const styles = StyleSheet.create({
   healthyBanner: {
     backgroundColor: '#10B981',
   },
-  insightText: {
-    marginLeft: spacing.sm,
-    flex: 1,
-  },
   insightMessage: {
     color: '#fff',
     fontWeight: '600',
@@ -1576,12 +1577,10 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
   },
   challengeCard: {
-    backgroundColor: '#fff',
     padding: spacing.md,
     borderRadius: 12,
     marginBottom: spacing.sm,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
   },
   challengeHeader: {
     flexDirection: 'row',
@@ -1592,7 +1591,6 @@ const styles = StyleSheet.create({
   challengeTitle: {
     fontWeight: '700',
     fontSize: 14,
-    color: colors.text,
   },
   rewardBadge: {
     backgroundColor: '#FEF3C7',
@@ -1607,7 +1605,6 @@ const styles = StyleSheet.create({
   },
   challengeDesc: {
     fontSize: 12,
-    color: colors.muted,
     marginBottom: spacing.sm,
   },
   challengeProgress: {
@@ -1623,18 +1620,11 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     overflow: 'hidden',
   },
-  progressFill: {
-    height: '100%',
-    backgroundColor: colors.primary,
-    borderRadius: 3,
-  },
   progressText: {
     fontSize: 10,
     fontWeight: '600',
-    color: colors.muted,
   },
   completeButton: {
-    backgroundColor: colors.primary,
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 8,
@@ -1672,12 +1662,10 @@ const styles = StyleSheet.create({
   tipTitle: {
     fontWeight: '700',
     fontSize: 14,
-    color: colors.text,
     marginBottom: 2,
   },
   tipMessage: {
     fontSize: 12,
-    color: colors.muted,
   },
   predictiveSection: {
     marginHorizontal: spacing.md,
@@ -1686,12 +1674,10 @@ const styles = StyleSheet.create({
   predictiveCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFBEB',
     padding: spacing.md,
     borderRadius: 12,
     marginBottom: spacing.sm,
     borderWidth: 1,
-    borderColor: '#FEF3C7',
   },
   predictiveContent: {
     marginLeft: spacing.md,
@@ -1700,12 +1686,10 @@ const styles = StyleSheet.create({
   predictiveText: {
     fontWeight: '600',
     fontSize: 12,
-    color: colors.text,
     marginBottom: 2,
   },
   predictiveSuggestion: {
     fontSize: 11,
-    color: colors.muted,
   },
   emptyState: {
     alignItems: 'center',
@@ -1715,13 +1699,11 @@ const styles = StyleSheet.create({
   emptyStateTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: colors.text,
     marginTop: spacing.md,
     marginBottom: spacing.xs,
   },
   emptyStateText: {
     fontSize: 14,
-    color: colors.muted,
     textAlign: 'center',
     lineHeight: 20,
   },
@@ -1732,7 +1714,6 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
@@ -1747,7 +1728,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.35)"
   },
   sheet: {
-    backgroundColor: "#fff",
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: spacing.lg,
@@ -1762,29 +1742,22 @@ const styles = StyleSheet.create({
   sheetTitle: {
     fontSize: 20,
     fontWeight: "800",
-    color: colors.text
   },
   label: {
     fontWeight: "700",
-    color: colors.text,
     marginBottom: spacing.xs,
     fontSize: 14,
   },
   input: {
-    backgroundColor: "#fff",
     borderRadius: radius.md,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: "#EFEFEF",
     fontSize: 16,
-    color: colors.text,
     marginBottom: spacing.md,
   },
   suggestionsContainer: {
-    backgroundColor: '#fff',
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: '#EFEFEF',
     marginBottom: spacing.md,
     maxHeight: 200,
   },
@@ -1798,11 +1771,9 @@ const styles = StyleSheet.create({
   },
   suggestionText: {
     fontSize: 14,
-    color: colors.text,
     fontWeight: '500',
   },
   primaryBtn: {
-    backgroundColor: colors.primary,
     paddingVertical: spacing.md,
     borderRadius: radius.md,
     alignItems: "center",
@@ -1813,102 +1784,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 16
   },
-  categorizationHelper: {
-    backgroundColor: '#EFF6FF',
-    marginHorizontal: spacing.md,
-    borderRadius: 12,
+  modalContent: {
     padding: spacing.md,
-    marginBottom: spacing.md,
-    borderWidth: 1,
-    borderColor: '#DBEAFE',
-  },
-  helperHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.sm,
-  },
-  helperTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  helperText: {
-    fontSize: 14,
-    color: colors.muted,
-    marginBottom: spacing.md,
-  },
-  uncategorizedList: {
-    flexDirection: 'row',
-  },
-  uncategorizedCard: {
-    backgroundColor: '#fff',
-    padding: spacing.md,
-    borderRadius: 8,
-    marginRight: spacing.sm,
-    width: 200,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-  },
-  txDescription: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.text,
-    marginBottom: spacing.xs,
-  },
-  txAmount: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: colors.primary,
-    marginBottom: spacing.sm,
-  },
-  categoryButtons: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-  },
-  categoryButton: {
-    backgroundColor: '#F3F4F6',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    marginBottom: 4,
-  },
-  categoryButtonText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  analysisCard: {
-    backgroundColor: '#fff',
-    marginHorizontal: spacing.md,
-    borderRadius: 12,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: '#EFEFEF',
-    marginBottom: spacing.lg,
-  },
-  analysisTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: spacing.md,
-  },
-  analysisRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  analysisItem: {
-    alignItems: 'center',
-  },
-  analysisLabel: {
-    fontSize: 12,
-    color: colors.muted,
-    marginBottom: 4,
-  },
-  analysisValue: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: colors.primary,
   },
 });

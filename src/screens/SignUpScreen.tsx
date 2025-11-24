@@ -1,5 +1,5 @@
 // src/screens/SignupScreen.tsx
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -10,11 +10,13 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
+  Alert,
+  Animated,
 } from "react-native";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 import { AuthStackParamList } from "../navigation/AppNavigator";
-import { supabase } from "../supabaseClient";
+import { enhancedSignUp } from "../supabaseClient";
 import { colors, spacing, radius } from "../constants/styles";
 
 type Props = NativeStackScreenProps<AuthStackParamList, "Signup">;
@@ -28,220 +30,304 @@ export default function SignupScreen({ navigation }: Props) {
   const [secure, setSecure] = useState(true);
   const [secure2, setSecure2] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [errors, setErrors] = useState<{ [key: string]: string }>({});
 
-  const phoneRegex = /^[0-9+\-\s()]{7,}$/; // simple allowlist; tweak to your locale if needed
+  const fadeAnim = new Animated.Value(0);
+  const slideAnim = new Animated.Value(50);
 
-  async function handleSignup() {
-    setErr(null);
-    const e = email.trim();
-    const p = password;
-    const c = confirm;
-    const n = fullName.trim();
-    const ph = phone.trim();
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 600, useNativeDriver: true }),
+    ]).start();
+  }, []);
 
-    if (!n) return setErr("Please enter your full name.");
-    if (!ph || !phoneRegex.test(ph)) return setErr("Please enter a valid phone number.");
-    if (!e) return setErr("Please enter your email.");
-    if (!p || p.length < 6) return setErr("Password must be at least 6 characters.");
-    if (p !== c) return setErr("Passwords do not match.");
+  const phoneRegex = /^[0-9+\-\s()]{7,}$/;
+
+  const validateForm = () => {
+    const newErrors: { [key: string]: string } = {};
+
+    if (!fullName.trim()) newErrors.fullName = "Please enter your full name";
+    if (!phone.trim()) newErrors.phone = "Please enter your phone number";
+    else if (!phoneRegex.test(phone)) newErrors.phone = "Please enter a valid phone number";
+
+    if (!email.trim()) newErrors.email = "Please enter your email";
+    else if (!/\S+@\S+\.\S+/.test(email)) newErrors.email = "Enter a valid email";
+
+    if (!password) newErrors.password = "Please create a password";
+    else if (password.length < 6) newErrors.password = "Password must be at least 6 characters";
+
+    if (!confirm) newErrors.confirm = "Please confirm your password";
+    else if (password !== confirm) newErrors.confirm = "Passwords do not match";
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleFieldChange = (field: string, value: string) => {
+    if (errors[field]) setErrors({ ...errors, [field]: "" });
+
+    switch (field) {
+      case "fullName": setFullName(value); break;
+      case "phone": setPhone(value); break;
+      case "email": setEmail(value); break;
+      case "password": setPassword(value); break;
+      case "confirm": setConfirm(value); break;
+    }
+  };
+
+  const handleSignup = async () => {
+    if (!validateForm()) return;
 
     try {
       setLoading(true);
-      // Save phone & name in user metadata
-      const { error } = await supabase.auth.signUp({
-        email: e,
-        password: p,
-        options: {
-          data: { full_name: n, phone: ph },
-        },
-      });
+      setErrors({});
+      const result = await enhancedSignUp(
+        email.trim().toLowerCase(),
+        password,
+        { full_name: fullName.trim(), phone: phone.trim() }
+      );
 
-      if (error) {
-        setErr(error.message);
+      if (result.user) {
+        Alert.alert(
+          "🎉 Account Created!",
+          "Your account has been created successfully!",
+          [
+            {
+              text: "Continue to Sign In",
+              onPress: () => navigation.navigate("Login", { prefillEmail: email.trim().toLowerCase() }),
+            },
+          ]
+        );
+      }
+    } catch (error: any) {
+      if (error.message.includes("email") || error.message.includes("Email")) {
+        setErrors({ email: error.message });
+      } else if (error.message.includes("password") || error.message.includes("Password")) {
+        setErrors({ password: error.message });
       } else {
-        // If email confirmations are on, user may need to confirm before session exists.
-        // The DB trigger will still create the profile row with metadata when the user is confirmed.
-        navigation.navigate("Login");
+        Alert.alert("Signup Failed", error.message || "An unexpected error occurred");
       }
     } finally {
       setLoading(false);
     }
-  }
+  };
 
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: "#F7FAFC" }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      style={styles.root}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.centerWrap}>
-        <View style={styles.card}>
-          <Text style={styles.title}>Create Account</Text>
-          <Text style={styles.subtitle}>Join us and start managing your finances</Text>
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.container}
+        showsVerticalScrollIndicator={false}
+      >
+        <Animated.View style={[styles.card, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          {/* Header */}
+          <View style={styles.header}>
+            <View style={styles.logoContainer}>
+              <Icon name="finance" size={40} color="#fff" />
+            </View>
+            <Text style={styles.title}>Welcome!</Text>
+            <Text style={styles.subtitle}>Create your account to get started</Text>
+          </View>
 
-          {/* Full Name */}
-          <Text style={styles.label}>Full Name</Text>
-          <View style={styles.inputWrap}>
-            <Icon name="account-outline" size={18} color="#6B7280" style={{ marginRight: 8 }} />
-            <TextInput
-              placeholder="Enter your full name"
+          {/* Form */}
+          <View style={styles.form}>
+            <InputField
+              icon="account-outline"
+              placeholder="Full Name"
               value={fullName}
-              onChangeText={setFullName}
-              style={styles.input}
-              placeholderTextColor="#9CA3AF"
+              onChange={(val) => handleFieldChange("fullName", val)}
+              error={errors.fullName}
+              editable={!loading}
             />
-          </View>
-
-          {/* Phone Number */}
-          <Text style={[styles.label, { marginTop: spacing.md }]}>Phone Number</Text>
-          <View style={styles.inputWrap}>
-            <Icon name="phone-outline" size={18} color="#6B7280" style={{ marginRight: 8 }} />
-            <TextInput
-              placeholder="Enter your phone number"
-              value={phone}
-              onChangeText={setPhone}
+            <InputField
+              icon="phone-outline"
+              placeholder="Phone Number"
               keyboardType="phone-pad"
-              style={styles.input}
-              placeholderTextColor="#9CA3AF"
+              value={phone}
+              onChange={(val) => handleFieldChange("phone", val)}
+              error={errors.phone}
+              editable={!loading}
             />
-          </View>
-
-          {/* Email */}
-          <Text style={[styles.label, { marginTop: spacing.md }]}>Email</Text>
-          <View style={styles.inputWrap}>
-            <Icon name="email-outline" size={18} color="#6B7280" style={{ marginRight: 8 }} />
-            <TextInput
-              placeholder="Enter your email"
-              value={email}
-              onChangeText={setEmail}
-              autoCapitalize="none"
+            <InputField
+              icon="email-outline"
+              placeholder="Email"
               keyboardType="email-address"
-              style={styles.input}
-              placeholderTextColor="#9CA3AF"
+              value={email}
+              onChange={(val) => handleFieldChange("email", val)}
+              error={errors.email}
+              editable={!loading}
+              autoCapitalize="none"
             />
-          </View>
-
-          {/* Password */}
-          <Text style={[styles.label, { marginTop: spacing.md }]}>Password</Text>
-          <View style={styles.inputWrap}>
-            <Icon name="lock-outline" size={18} color="#6B7280" style={{ marginRight: 8 }} />
-            <TextInput
-              placeholder="Create a password"
+            <InputField
+              icon="lock-outline"
+              placeholder="Password"
               value={password}
-              onChangeText={setPassword}
               secureTextEntry={secure}
-              style={styles.input}
-              placeholderTextColor="#9CA3AF"
+              onChange={(val) => handleFieldChange("password", val)}
+              toggleSecure={() => setSecure((s) => !s)}
+              error={errors.password}
+              editable={!loading}
             />
-            <Pressable onPress={() => setSecure((s) => !s)} hitSlop={12}>
-              <Icon name={secure ? "eye-off-outline" : "eye-outline"} size={20} color="#6B7280" />
-            </Pressable>
-          </View>
-
-          {/* Confirm */}
-          <Text style={[styles.label, { marginTop: spacing.md }]}>Confirm Password</Text>
-          <View style={styles.inputWrap}>
-            <Icon name="lock-check-outline" size={18} color="#6B7280" style={{ marginRight: 8 }} />
-            <TextInput
-              placeholder="Confirm your password"
+            <InputField
+              icon="lock-check-outline"
+              placeholder="Confirm Password"
               value={confirm}
-              onChangeText={setConfirm}
               secureTextEntry={secure2}
-              style={styles.input}
-              placeholderTextColor="#9CA3AF"
+              onChange={(val) => handleFieldChange("confirm", val)}
+              toggleSecure={() => setSecure2((s) => !s)}
+              error={errors.confirm}
+              editable={!loading}
+              onSubmit={handleSignup}
             />
-            <Pressable onPress={() => setSecure2((s) => !s)} hitSlop={12}>
-              <Icon name={secure2 ? "eye-off-outline" : "eye-outline"} size={20} color="#6B7280" />
+
+            {/* Signup Button */}
+            <Pressable
+              style={({ pressed }) => [styles.primaryBtn, pressed && styles.buttonPressed, loading && styles.buttonDisabled]}
+              onPress={handleSignup}
+              disabled={loading}
+            >
+              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>Create Account</Text>}
             </Pressable>
           </View>
 
-          {/* Error */}
-          {err ? <Text style={styles.error}>{err}</Text> : null}
-
-          {/* Create Account */}
-          <Pressable
-            onPress={handleSignup}
-            style={({ pressed }) => [styles.primaryBtn, pressed && { opacity: 0.9 }]}
-            disabled={loading}
-          >
-            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>Create Account</Text>}
-          </Pressable>
-
-          <View style={styles.bottomRow}>
-            <Text style={{ color: "#6B7280" }}>Already have an account?</Text>
-            <Pressable onPress={() => navigation.navigate("Login")} hitSlop={8}>
-              <Text style={styles.linkStrong}>Sign In</Text>
+          {/* Footer */}
+          <View style={styles.footer}>
+            <Text style={styles.footerText}>Already have an account?</Text>
+            <Pressable onPress={() => navigation.navigate("Login")} disabled={loading}>
+              <Text style={styles.footerLink}>Sign In</Text>
             </Pressable>
           </View>
-        </View>
+        </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
-const MAX_WIDTH = 720;
+// Reusable InputField component
+type InputFieldProps = {
+  icon: string;
+  placeholder: string;
+  value: string;
+  onChange: (val: string) => void;
+  error?: string;
+  editable?: boolean;
+  secureTextEntry?: boolean;
+  toggleSecure?: () => void;
+  keyboardType?: any;
+  onSubmit?: () => void;
+  autoCapitalize?: "none" | "sentences" | "words" | "characters";
+};
+
+const InputField: React.FC<InputFieldProps> = ({
+  icon,
+  placeholder,
+  value,
+  onChange,
+  error,
+  editable = true,
+  secureTextEntry,
+  toggleSecure,
+  keyboardType = "default",
+  onSubmit,
+  autoCapitalize,
+}) => (
+  <View style={{ marginBottom: spacing.md }}>
+    <View style={[styles.inputWrap, error && styles.inputWrapError]}>
+      <Icon name={icon} size={20} color="#6B7280" style={{ marginRight: spacing.sm }} />
+      <TextInput
+        placeholder={placeholder}
+        placeholderTextColor="#9CA3AF"
+        value={value}
+        onChangeText={onChange}
+        editable={editable}
+        secureTextEntry={secureTextEntry}
+        style={styles.input}
+        keyboardType={keyboardType}
+        onSubmitEditing={onSubmit}
+        autoCapitalize={autoCapitalize}
+      />
+      {toggleSecure && (
+        <Pressable onPress={toggleSecure} hitSlop={12} disabled={!editable}>
+          <Icon name={secureTextEntry ? "eye-off-outline" : "eye-outline"} size={22} color="#6B7280" />
+        </Pressable>
+      )}
+    </View>
+    {error && <Text style={styles.errorText}>{error}</Text>}
+  </View>
+);
 
 const styles = StyleSheet.create({
-  centerWrap: {
-    flexGrow: 1,
+  root: { flex: 1, backgroundColor: "#f8fafc" },
+  container: { flexGrow: 1, justifyContent: "center", padding: spacing.lg },
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: radius.xl,
+    padding: spacing.xl,
+    shadowColor: "#8b5cf6",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 5,
+  },
+  header: { alignItems: "center", marginBottom: spacing.lg },
+  logoContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "#8b5cf6",
     justifyContent: "center",
     alignItems: "center",
-    padding: spacing.lg,
+    marginBottom: spacing.md,
+    shadowColor: "#8b5cf6",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 15,
+    elevation: 6,
   },
-  card: {
-    width: "100%",
-    maxWidth: MAX_WIDTH,
-    backgroundColor: "#fff",
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 4,
-    borderWidth: 1,
-    borderColor: "#F3F4F6",
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "800",
-    textAlign: "center",
-    color: colors.text,
-  },
-  subtitle: {
-    textAlign: "center",
-    color: "#6B7280",
-    marginTop: 6,
-    marginBottom: spacing.lg,
-  },
-  label: { fontWeight: "700", color: colors.text, marginBottom: 6 },
+  title: { fontSize: 32, fontWeight: "800", color: "#8b5cf6", marginBottom: spacing.xs },
+  subtitle: { color: colors.muted, textAlign: "center", fontSize: 16, marginBottom: spacing.md },
+  form: { marginBottom: spacing.lg },
   inputWrap: {
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#D1D5DB",
-    borderRadius: 12,
-    paddingHorizontal: 12,
+    borderColor: "rgba(229, 231, 235, 0.8)",
+    borderRadius: radius.lg,
+    paddingHorizontal: spacing.md,
     backgroundColor: "#fff",
-    height: 48,
+    height: 56,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  input: { flex: 1, paddingVertical: 10, color: colors.text },
+  inputWrapError: { borderColor: "#ef4444", backgroundColor: "#fef2f2" },
+  input: { flex: 1, fontSize: 16, color: colors.text, paddingVertical: 0 },
+  errorText: { color: "#ef4444", fontSize: 12, marginTop: spacing.xs, marginLeft: spacing.sm },
   primaryBtn: {
     marginTop: spacing.lg,
-    backgroundColor: "#1976D2",
-    borderRadius: 12,
-    height: 48,
+    backgroundColor: "#8b5cf6",
+    borderRadius: radius.lg,
+    height: 56,
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: spacing.sm,
+    shadowColor: "#8b5cf6",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 15,
+    elevation: 6,
   },
   primaryBtnText: { color: "#fff", fontWeight: "700", fontSize: 16 },
-  bottomRow: {
-    marginTop: spacing.lg,
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 8 as any,
-  },
-  linkStrong: { color: "#1976D2", fontWeight: "700", marginLeft: 6 },
-  error: { color: "#B00020", marginTop: 8, fontSize: 13 },
+  buttonPressed: { opacity: 0.9, transform: [{ scale: 0.98 }] },
+  buttonDisabled: { opacity: 0.6 },
+  footer: { alignItems: "center", marginTop: spacing.lg },
+  footerText: { color: colors.muted, fontSize: 14, marginBottom: spacing.xs },
+  footerLink: { color: "#8b5cf6", fontWeight: "700", fontSize: 14 },
 });

@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { View, TextInput, Button, Alert } from "react-native";
 import { supabase } from "../supabaseClient";
+//import { ThemedScreen } from '../components/ThemedScreen';
+import { ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
 
 export default function ForgotPasswordScreen() {
   const [email, setEmail] = useState("");

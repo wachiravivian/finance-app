@@ -1,3 +1,4 @@
+// lib/payments.ts
 import { supabase } from '../supabaseClient';
 
 // Types
@@ -46,6 +47,39 @@ export interface TransactionStats {
   net: number;
   categories: Array<{ category: string; total: number }>;
 }
+
+// STK Payment functions
+export const payGoalStk = async (phone: string, amount: number): Promise<{ success: boolean; message?: string }> => {
+  try {
+    console.log(`Processing STK push for: ${phone}, Amount: ${amount}`);
+    // Simulate API call
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    return { success: true, message: 'STK push sent successfully' };
+  } catch (error) {
+    return { success: false, message: 'Failed to send STK push' };
+  }
+};
+
+export const formatPhoneNumber = (phone: string): string => {
+  // Remove all non-digit characters
+  const cleaned = phone.replace(/\D/g, '');
+  
+  // Format to 254...
+  if (cleaned.startsWith('0')) {
+    return '254' + cleaned.substring(1);
+  } else if (cleaned.startsWith('254')) {
+    return cleaned;
+  } else if (cleaned.startsWith('+254')) {
+    return cleaned.substring(1);
+  } else {
+    return '254' + cleaned;
+  }
+};
+
+export const validateMpesaPhone = (phone: string): boolean => {
+  const cleaned = phone.replace(/\D/g, '');
+  return /^(254|0)?(7[0-9]{8})$/.test(cleaned);
+};
 
 // Transaction functions
 export const addTransaction = async (transaction: Omit<LocalPayment, 'id' | 'created_at' | 'user_id'>): Promise<string> => {
@@ -321,7 +355,7 @@ export const getPaymentMethods = async (): Promise<PaymentMethod[]> => {
   }
 };
 
-// Utility functions (unchanged)
+// Utility functions
 export const calculateTotalAmount = (payments: LocalPayment[]): number => {
   return payments.reduce((sum: number, payment: LocalPayment) => {
     if (payment.type === 'income') {

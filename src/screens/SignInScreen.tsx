@@ -2,6 +2,8 @@
 import React, { useState } from 'react';
 import { View, TextInput, Button, Text } from 'react-native';
 import { supabase } from '../supabaseClient';
+//import { ThemedScreen } from '../components/ThemedScreen';
+import { ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
 
 export default function SignInScreen({ navigation }: any) {
   const [email, setEmail] = useState('');

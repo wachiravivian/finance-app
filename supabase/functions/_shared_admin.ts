@@ -1,67 +1,61 @@
 // supabase/functions/_shared_admin.ts
-// deno-lint-ignore-file no-explicit-any
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.0";
 
-/**
- * Environment variables (set in Supabase Function secrets):
- * PROJECT_URL=https://<your-project-ref>.supabase.co
- * SERVICE_ROLE_KEY=<your-service-role-key>
- */
-export function adminClient() {
-  const url = Deno.env.get("PROJECT_URL");
-  const serviceKey = Deno.env.get("SERVICE_ROLE_KEY");
-  if (!url || !serviceKey) throw new Error("Missing PROJECT_URL or SERVICE_ROLE_KEY env vars");
-  return createClient(url, serviceKey, { auth: { persistSession: false } });
-}
-
-/** ✅ Global CORS headers used by all functions */
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-/** ✅ Helper for success responses */
-export function ok(body: any, status = 200): Response {
-  return new Response(JSON.stringify(body), {
+export function ok(data: any, status = 200) {
+  return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "application/json",
-    },
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
-/** ✅ Helper for error responses */
-export function err(message: string, status = 400): Response {
+export function err(message: string, status = 400) {
   return new Response(JSON.stringify({ error: message }), {
     status,
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "application/json",
-    },
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
-/** ✅ Validate admin authorization */
+export function adminClient() {
+  return createClient(
+    Deno.env.get("SUPABASE_URL") ?? "",
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+  );
+}
+
 export async function assertAdmin(req: Request) {
-  const supabase = adminClient();
-  const authHeader = req.headers.get("Authorization") || "";
-  const jwt = authHeader.replace("Bearer ", "").trim();
+  try {
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return { ok: false, error: "No authorization header" };
+    }
 
-  if (!jwt) return { ok: false, error: "Missing Bearer token" };
+    const token = authHeader.replace("Bearer ", "");
+    const supa = adminClient();
+    
+    const { data: { user }, error } = await supa.auth.getUser(token);
+    if (error || !user) {
+      return { ok: false, error: "Invalid token" };
+    }
 
-  const { data: userData, error: userErr } = await supabase.auth.getUser(jwt);
-  if (userErr || !userData?.user) return { ok: false, error: "Invalid token" };
+    // Check if user is admin
+    const { data: profile } = await supa
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .single();
 
-  const { data: prof, error: profErr } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", userData.user.id)
-    .maybeSingle();
+    if (profile?.role !== "admin") {
+      return { ok: false, error: "Admin access required" };
+    }
 
-  if (profErr) return { ok: false, error: profErr.message };
-  if (!prof || prof.role !== "admin") return { ok: false, error: "Forbidden: not admin" };
-
-  return { ok: true, user: userData.user };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: "Authorization check failed" };
+  }
 }

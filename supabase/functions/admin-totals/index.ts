@@ -1,3 +1,4 @@
+// supabase/functions/admin-totals/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { adminClient, assertAdmin, corsHeaders, ok, err } from "../_shared_admin.ts";
 

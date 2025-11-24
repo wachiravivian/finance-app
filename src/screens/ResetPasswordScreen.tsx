@@ -3,6 +3,8 @@ import { View, TextInput, Button, Alert } from "react-native";
 import { supabase } from "../supabaseClient";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { AuthStackParamList } from "../navigation/AppNavigator";
+//import { ThemedScreen } from '../components/ThemedScreen';
+import { ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
 
 type Props = NativeStackScreenProps<AuthStackParamList, "ResetPassword">;
 

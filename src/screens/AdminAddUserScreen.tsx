@@ -1,12 +1,14 @@
+// src/screens/AdminAddUserScreen.tsx
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Alert, ActivityIndicator,
 } from "react-native";
 import { DrawerScreenProps } from "@react-navigation/drawer";
-import { colors, spacing, radius } from "../constants/styles";
+import { spacing, radius } from "../constants/styles";
 import { adminCreateUser } from "../lib/adminApi";
 import { DrawerParamList } from "../navigation/AppNavigator";
 import { supabase } from "../supabaseClient";
+import { useTheme } from "../hooks/useTheme";
 
 type Props = DrawerScreenProps<DrawerParamList, "AdminAddUser">;
 
@@ -21,6 +23,7 @@ function showNiceError(e: unknown) {
 }
 
 export default function AdminAddUserScreen({ navigation }: Props) {
+  const { colors } = useTheme();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -29,7 +32,6 @@ export default function AdminAddUserScreen({ navigation }: Props) {
   const [loading, setLoading] = useState(false);
 
   async function handleCreateUser() {
-    // quick auth check to avoid "Missing authorization header" from the function
     const session = (await supabase.auth.getSession()).data.session;
     if (!session) {
       Alert.alert("Not signed in", "Please sign in as an admin and try again.");
@@ -81,15 +83,23 @@ export default function AdminAddUserScreen({ navigation }: Props) {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: spacing.xl }}>
-      <Text style={styles.title}>Add New User</Text>
-      <Text style={styles.subtitle}>Create a new user account</Text>
+    <ScrollView
+      style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={{ paddingBottom: spacing.xl }}
+    >
+      <Text style={[styles.title, { color: colors.text }]}>Add New User</Text>
+      <Text style={[styles.subtitle, { color: colors.subtitle }]}>Create a new user account</Text>
 
       <View style={styles.form}>
-        <Text style={styles.label}>Email *</Text>
+        <Text style={[styles.label, { color: colors.text }]}>Email *</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, {
+            backgroundColor: colors.cardBackground,
+            borderColor: colors.border,
+            color: colors.text
+          }]}
           placeholder="user@example.com"
+          placeholderTextColor={colors.subtitle}
           value={email}
           onChangeText={setEmail}
           keyboardType="email-address"
@@ -97,51 +107,77 @@ export default function AdminAddUserScreen({ navigation }: Props) {
           autoComplete="email"
         />
 
-        <Text style={styles.label}>Password *</Text>
+        <Text style={[styles.label, { color: colors.text }]}>Password *</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, {
+            backgroundColor: colors.cardBackground,
+            borderColor: colors.border,
+            color: colors.text
+          }]}
           placeholder="Minimum 6 characters"
+          placeholderTextColor={colors.subtitle}
           value={password}
           onChangeText={setPassword}
           secureTextEntry
           autoCapitalize="none"
         />
 
-        <Text style={styles.label}>Display Name</Text>
+        <Text style={[styles.label, { color: colors.text }]}>Display Name</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, {
+            backgroundColor: colors.cardBackground,
+            borderColor: colors.border,
+            color: colors.text
+          }]}
           placeholder="John Doe"
+          placeholderTextColor={colors.subtitle}
           value={displayName}
           onChangeText={setDisplayName}
         />
 
-        <Text style={styles.label}>Phone</Text>
+        <Text style={[styles.label, { color: colors.text }]}>Phone</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, {
+            backgroundColor: colors.cardBackground,
+            borderColor: colors.border,
+            color: colors.text
+          }]}
           placeholder="+254712345678"
+          placeholderTextColor={colors.subtitle}
           value={phone}
           onChangeText={setPhone}
           keyboardType="phone-pad"
         />
 
-        <Text style={styles.label}>Role</Text>
+        <Text style={[styles.label, { color: colors.text }]}>Role</Text>
         <View style={styles.roleContainer}>
-          <TouchableOpacity
-            style={[styles.roleButton, role === "user" && styles.roleButtonActive]}
-            onPress={() => setRole("user")}
-          >
-            <Text style={[styles.roleButtonText, role === "user" && styles.roleButtonTextActive]}>User</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.roleButton, role === "admin" && styles.roleButtonActive]}
-            onPress={() => setRole("admin")}
-          >
-            <Text style={[styles.roleButtonText, role === "admin" && styles.roleButtonTextActive]}>Admin</Text>
-          </TouchableOpacity>
+          {["user", "admin"].map((r) => (
+            <TouchableOpacity
+              key={r}
+              style={[
+                styles.roleButton,
+                { backgroundColor: role === r ? colors.primary : colors.cardBackground },
+              ]}
+              onPress={() => setRole(r as "user" | "admin")}
+            >
+              <Text
+                style={[
+                  styles.roleButtonText,
+                  { color: role === r ? "#fff" : colors.text },
+                ]}
+              >
+                {r.charAt(0).toUpperCase() + r.slice(1)}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
         <TouchableOpacity
-          style={[styles.submitButton, loading && styles.submitButtonDisabled]}
+          style={[
+            styles.submitButton,
+            { backgroundColor: colors.primary },
+            loading && styles.submitButtonDisabled,
+          ]}
           onPress={handleCreateUser}
           disabled={loading}
         >
@@ -153,24 +189,22 @@ export default function AdminAddUserScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1 },
   title: {
-    fontSize: 24, fontWeight: "800", color: colors.text,
+    fontSize: 24, fontWeight: "800",
     marginTop: spacing.lg, marginHorizontal: spacing.md, marginBottom: spacing.xs,
   },
-  subtitle: { fontSize: 14, color: colors.muted, marginBottom: spacing.lg, marginHorizontal: spacing.md },
+  subtitle: { fontSize: 14, marginBottom: spacing.lg, marginHorizontal: spacing.md },
   form: { padding: spacing.md },
-  label: { fontSize: 14, fontWeight: "700", color: colors.text, marginBottom: spacing.xs, marginTop: spacing.md },
+  label: { fontSize: 14, fontWeight: "700", marginBottom: spacing.xs, marginTop: spacing.md },
   input: {
-    backgroundColor: "#fff", borderRadius: radius.md, padding: spacing.md,
-    borderWidth: 1, borderColor: "#EFEFEF", fontSize: 16, color: colors.text,
+    borderRadius: radius.md, padding: spacing.md,
+    borderWidth: 1, fontSize: 16,
   },
   roleContainer: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs },
-  roleButton: { flex: 1, paddingVertical: spacing.md, borderRadius: radius.md, backgroundColor: "#E5E7EB", alignItems: "center" },
-  roleButtonActive: { backgroundColor: colors.primary },
-  roleButtonText: { color: colors.text, fontWeight: "700", fontSize: 14 },
-  roleButtonTextActive: { color: "#fff" },
-  submitButton: { backgroundColor: colors.primary, paddingVertical: spacing.md, borderRadius: radius.md, alignItems: "center", marginTop: spacing.xl },
+  roleButton: { flex: 1, paddingVertical: spacing.md, borderRadius: radius.md, alignItems: "center" },
+  roleButtonText: { fontWeight: "700", fontSize: 14 },
+  submitButton: { paddingVertical: spacing.md, borderRadius: radius.md, alignItems: "center", marginTop: spacing.xl },
   submitButtonDisabled: { opacity: 0.6 },
   submitButtonText: { color: "#fff", fontWeight: "800", fontSize: 16 },
 });

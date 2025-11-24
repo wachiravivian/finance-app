@@ -1,45 +1,63 @@
 // supabase/functions/admin-list-goals/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { adminClient, assertAdmin, corsHeaders } from "../_shared_admin.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders(req.headers.get("Origin") ?? "*") });
-  }
-  const headers = corsHeaders(req.headers.get("Origin") ?? "*");
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+};
 
-  const auth = await assertAdmin(req);
-  if (!auth.ok) {
-    return new Response(JSON.stringify({ error: auth.error }), {
-      status: 401,
-      headers: { ...headers, "Content-Type": "application/json" },
-    });
+serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    const supabase = adminClient();
-    // Adjust column names to your schema
-    const { data: rows, error } = await supabase
-      .from("goals")
-      .select("id,user_id,title,target_amount,current_amount,deadline,created_at")
-      .order("created_at", { ascending: false })
+    const supabaseAdmin = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    );
+
+    const { data: goals, error } = await supabaseAdmin
+      .from('goals')
+      .select('*')
+      .order('created_at', { ascending: false })
       .limit(100);
 
     if (error) {
-      return new Response(JSON.stringify({ error: error.message }), {
-        status: 500,
-        headers: { ...headers, "Content-Type": "application/json" },
-      });
+      throw error;
     }
 
-    return new Response(JSON.stringify({ rows: rows ?? [] }), {
-      status: 200,
-      headers: { ...headers, "Content-Type": "application/json" },
-    });
-  } catch (e) {
-    return new Response(JSON.stringify({ error: String(e) }), {
-      status: 500,
-      headers: { ...headers, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ 
+        success: true, 
+        goals: goals || [] 
+      }),
+      {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+  } catch (error) {
+    console.error('Error in admin-list-goals:', error);
+    
+    return new Response(
+      JSON.stringify({ 
+        success: false, 
+        error: error.message,
+        goals: [] 
+      }),
+      {
+        status: 500,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
   }
 });

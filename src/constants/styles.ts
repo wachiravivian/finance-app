@@ -1,6 +1,5 @@
 import { TextStyle } from "react-native";
 
-// 🎨 Chumz-like palette: confident blue + fresh green, soft neutrals
 export const colors = {
   // Brand
   primary: "#1A73E8",        // bold blue

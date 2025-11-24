@@ -4,6 +4,8 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, Alert, ActivityInd
 import { colors, spacing, radius } from "../constants/styles";
 import { supabase } from "../supabaseClient";
 import { useAuth } from "../hooks/useAuth";
+//import { ThemedScreen } from '../components/ThemedScreen';
+import { ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
 
 export default function AdminProfileScreen() {
   const { profile, userId } = useAuth();

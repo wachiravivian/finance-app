@@ -12,6 +12,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { supabase } from '../supabaseClient';
+import { useTheme } from '../hooks/useTheme';
+//import { ThemedScreen } from '../components/ThemedScreen';
+import { ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
+
 
 // Define types based on your actual transaction schema
 interface Transaction {
@@ -31,7 +35,7 @@ interface Transaction {
 interface PaymentStats {
   totalIncome: number;
   totalExpenses: number;
-  net: number;
+  net: number; // Changed from 0 to number
   categories: Array<{ category: string; total: number }>;
 }
 
@@ -51,6 +55,8 @@ interface NavigationProps {
 const DashboardScreen: React.FC = () => {
   const navigation = useNavigation<NavigationProps>();
   const isFocused = useIsFocused();
+  const { colors } = useTheme();
+  
   const [paymentStats, setPaymentStats] = useState<PaymentStats>({
     totalIncome: 0,
     totalExpenses: 0,
@@ -100,19 +106,17 @@ const DashboardScreen: React.FC = () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('User not authenticated');
 
-      // Use your actual transaction schema with 'ts' instead of 'date'
       const { data: transactions, error } = await supabase
         .from('transactions')
         .select('*')
         .eq('user_id', user.id)
-        .order('ts', { ascending: false }); // Changed from 'date' to 'ts'
+        .order('ts', { ascending: false });
 
       if (error) {
         console.error('Supabase error:', error);
         throw error;
       }
 
-      // Calculate stats based on your actual schema (debit/credit)
       const stats = {
         totalIncome: 0,
         totalExpenses: 0,
@@ -128,7 +132,6 @@ const DashboardScreen: React.FC = () => {
         } else if (transaction.direction === 'debit') {
           stats.totalExpenses += transaction.amount;
           
-          // Track category totals for expenses
           const category = transaction.category || 'Uncategorized';
           if (!categoryTotals[category]) {
             categoryTotals[category] = 0;
@@ -159,7 +162,7 @@ const DashboardScreen: React.FC = () => {
         .from('transactions')
         .select('*')
         .eq('user_id', user.id)
-        .order('ts', { ascending: false }) // Changed from 'date' to 'ts'
+        .order('ts', { ascending: false })
         .limit(5);
 
       if (error) throw error;
@@ -211,7 +214,6 @@ const DashboardScreen: React.FC = () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('User not authenticated');
 
-      // Generate smart reminders based on current data
       await generateSmartReminders();
       
     } catch (error) {
@@ -226,7 +228,6 @@ const DashboardScreen: React.FC = () => {
 
     const newReminders: Reminder[] = [];
 
-    // Check for budget alerts
     budgets.forEach(budget => {
       const progress = (budget.spent / budget.amount) * 100;
       if (progress >= 90) {
@@ -250,7 +251,6 @@ const DashboardScreen: React.FC = () => {
       }
     });
 
-    // Check for goal progress
     goals.forEach(goal => {
       const progress = (goal.saved_amount / goal.target_amount) * 100;
       if (progress >= 90) {
@@ -265,7 +265,6 @@ const DashboardScreen: React.FC = () => {
       }
     });
 
-    // Check for low transactions
     if (recentTransactions.length === 0) {
       newReminders.push({
         id: 'no-transactions',
@@ -277,7 +276,6 @@ const DashboardScreen: React.FC = () => {
       });
     }
 
-    // Check for negative net
     if (paymentStats.net < 0) {
       newReminders.push({
         id: 'negative-net',
@@ -321,26 +319,23 @@ const DashboardScreen: React.FC = () => {
     }
   };
 
-  // Function to handle navigation to transactions
   const handleImportTransactions = () => {
-    // Navigate directly to Transactions screen where M-PESA import is available
     navigation.navigate('Transactions');
   };
 
-  // Function to get transaction description
   const getTransactionDescription = (transaction: Transaction): string => {
     return transaction.counterparty || transaction.title || transaction.reference || 'Transaction';
   };
 
-  // Function to get transaction category
   const getTransactionCategory = (transaction: Transaction): string => {
     return transaction.category || 'Uncategorized';
   };
 
-  // Function to format timestamp to readable date
   const formatTransactionDate = (timestamp: string): string => {
     return new Date(timestamp).toLocaleDateString();
   };
+
+  const styles = createStyles(colors);
 
   return (
     <View style={styles.container}>
@@ -360,14 +355,14 @@ const DashboardScreen: React.FC = () => {
               <Ionicons 
                 name="refresh" 
                 size={24} 
-                color={loading ? '#ccc' : '#007AFF'} 
+                color={loading ? colors.subtitle : colors.primary} 
               />
             </TouchableOpacity>
           </View>
 
           {/* Financial Summary */}
           <LinearGradient
-            colors={['#667eea', '#764ba2']}
+            colors={colors.summaryCard as [string, string]} // Fixed: Cast to tuple type
             style={styles.summaryCard}
           >
             <Text style={styles.summaryTitle}>Financial Summary</Text>
@@ -410,7 +405,6 @@ const DashboardScreen: React.FC = () => {
                   key={reminder.id} 
                   style={styles.reminderItem}
                   onPress={() => {
-                    // Mark as read or handle reminder click
                     setReminders(prev => 
                       prev.map(r => 
                         r.id === reminder.id ? { ...r, is_read: true } : r
@@ -608,10 +602,10 @@ const DashboardScreen: React.FC = () => {
   );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors: any) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: colors.background,
   },
   scrollView: {
     flex: 1,
@@ -622,22 +616,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 20,
     paddingTop: 60,
-    backgroundColor: 'white',
+    backgroundColor: colors.headerBackground,
   },
   greeting: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#333',
+    color: colors.text,
   },
   subtitle: {
     fontSize: 16,
-    color: '#666',
+    color: colors.subtitle,
     marginTop: 4,
   },
   syncButton: {
     padding: 8,
     borderRadius: 20,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: colors.cardBackground === 'white' ? '#f0f0f0' : '#2a2a2a',
   },
   summaryCard: {
     margin: 20,
@@ -673,13 +667,13 @@ const styles = StyleSheet.create({
     color: 'white',
   },
   incomeText: {
-    color: '#4CAF50',
+    color: colors.income,
   },
   expenseText: {
-    color: '#FF6B6B',
+    color: colors.expense,
   },
   section: {
-    backgroundColor: 'white',
+    backgroundColor: colors.cardBackground,
     marginHorizontal: 20,
     marginBottom: 16,
     padding: 16,
@@ -699,10 +693,10 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#333',
+    color: colors.text,
   },
   seeAllText: {
-    color: '#007AFF',
+    color: colors.primary,
     fontWeight: '600',
   },
   actionsGrid: {
@@ -734,7 +728,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: colors.border,
   },
   transactionInfo: {
     flex: 1,
@@ -742,16 +736,16 @@ const styles = StyleSheet.create({
   transactionDescription: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#333',
+    color: colors.text,
   },
   transactionCategory: {
     fontSize: 14,
-    color: '#666',
+    color: colors.subtitle,
     marginTop: 2,
   },
   transactionDate: {
     fontSize: 12,
-    color: '#999',
+    color: colors.subtitle,
     marginTop: 2,
   },
   transactionAmount: {
@@ -770,11 +764,11 @@ const styles = StyleSheet.create({
   budgetCategory: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#333',
+    color: colors.text,
   },
   budgetAmount: {
     fontSize: 14,
-    color: '#666',
+    color: colors.subtitle,
   },
   goalItem: {
     marginBottom: 16,
@@ -788,15 +782,15 @@ const styles = StyleSheet.create({
   goalName: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#333',
+    color: colors.text,
   },
   goalAmount: {
     fontSize: 14,
-    color: '#666',
+    color: colors.subtitle,
   },
   progressBar: {
     height: 6,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: colors.border,
     borderRadius: 3,
     overflow: 'hidden',
     marginBottom: 4,
@@ -807,7 +801,7 @@ const styles = StyleSheet.create({
   },
   progressText: {
     fontSize: 12,
-    color: '#666',
+    color: colors.subtitle,
     textAlign: 'right',
   },
   emptyState: {
@@ -816,12 +810,12 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     textAlign: 'center',
-    color: '#999',
+    color: colors.subtitle,
     fontStyle: 'italic',
     marginBottom: 12,
   },
   importButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: colors.primary,
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
@@ -830,13 +824,12 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: '600',
   },
-  // New styles for reminders
   reminderItem: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: colors.border,
   },
   reminderIcon: {
     width: 32,
@@ -853,23 +846,23 @@ const styles = StyleSheet.create({
   reminderTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#333',
+    color: colors.text,
     marginBottom: 2,
   },
   reminderMessage: {
     fontSize: 14,
-    color: '#666',
+    color: colors.subtitle,
     marginBottom: 4,
   },
   reminderTime: {
     fontSize: 12,
-    color: '#999',
+    color: colors.subtitle,
   },
   unreadDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#007AFF',
+    backgroundColor: colors.primary,
     marginLeft: 8,
     marginTop: 4,
   },
