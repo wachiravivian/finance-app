@@ -1,3 +1,4 @@
+// supabase/functions/admin-delete-user/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { adminClient, assertAdmin, corsHeaders, ok, err } from "../_shared_admin.ts";
 
@@ -15,12 +16,43 @@ serve(async (req) => {
 
     if (!user_id) return err("Missing user_id", 400);
 
-    // ✅ Delete from Auth
-    const { error } = await supa.auth.admin.deleteUser(user_id);
-    if (error) throw error;
+    console.log(`Deleting user: ${user_id}`);
 
-    // ✅ Clean up from profiles table
-    await supa.from("profiles").delete().eq("id", user_id);
+    // First, check if user exists
+    const { data: user, error: getUserError } = await supa.auth.admin.getUserById(user_id);
+    if (getUserError) {
+      console.error("Error getting user:", getUserError);
+      return err("User not found", 404);
+    }
+
+    // Clean up related data first to avoid foreign key constraints
+    try {
+      // Delete user's transactions
+      await supa.from("transactions").delete().eq("user_id", user_id);
+      
+      // Delete user's budgets
+      await supa.from("budgets").delete().eq("user_id", user_id);
+      
+      // Delete user's goals
+      await supa.from("goals").delete().eq("user_id", user_id);
+      
+      // Delete user's profile
+      await supa.from("profiles").delete().eq("id", user_id);
+      
+      console.log("Related data cleaned up successfully");
+    } catch (cleanupError) {
+      console.error("Cleanup error (non-critical):", cleanupError);
+      // Continue with user deletion even if cleanup fails
+    }
+
+    // ✅ Delete from Auth
+    const { error: deleteError } = await supa.auth.admin.deleteUser(user_id);
+    if (deleteError) {
+      console.error("Auth delete error:", deleteError);
+      throw deleteError;
+    }
+
+    console.log("User deleted successfully from auth and database");
 
     return ok({ success: true, message: "User deleted successfully" });
   } catch (error) {

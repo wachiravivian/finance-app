@@ -28,19 +28,14 @@ type AnalyticsData = {
     activeUsers: number;
     totalTransactions: number;
     transactionVolume: number;
-    totalBudgets: number;
     totalGoals: number;
-    savingsRate: number;
+    completedGoals: number;
+    totalBillReminders: number;
+    upcomingBillReminders: number;
   };
   financialHealth: {
-    averageSavingsRate: number;
-    budgetAdherence: number;
     goalCompletionRate: number;
-    riskProfiles: {
-      healthy: number;
-      moderate: number;
-      atRisk: number;
-    };
+    billReminderCompletionRate: number;
   };
   userEngagement: {
     dailyActive: number;
@@ -69,29 +64,13 @@ export default function AdminReportsScreen({ navigation }: Props) {
   const loadAnalytics = async () => {
     try {
       setLoading(true);
-      console.log("🔄 Loading analytics data...");
-      
       const { data, error } = await supabase.functions.invoke("admin-get-analytics");
-
-      console.log("📊 Analytics response:", { data, error });
-
-      if (error) {
-        console.error("❌ Edge function error:", error);
-        // Try direct database query as fallback
+      if (error || !data) {
         await loadDirectAnalytics();
         return;
       }
-      
-      if (!data) {
-        throw new Error("No data returned from analytics service");
-      }
-
-      console.log("✅ Analytics data loaded successfully. Total users:", data.overview.totalUsers);
       setAnalytics(data);
-      
-    } catch (error: any) {
-      console.error('💥 Error loading analytics:', error);
-      // Try direct database query as fallback
+    } catch {
       await loadDirectAnalytics();
     } finally {
       setLoading(false);
@@ -101,61 +80,69 @@ export default function AdminReportsScreen({ navigation }: Props) {
 
   const loadDirectAnalytics = async () => {
     try {
-      console.log("🔄 Loading analytics directly from database...");
-      
-      // Get user count from auth (this should give you the correct 5 users)
-      const { data: { users: authUsers }, error: authError } = await supabase.auth.admin.listUsers();
-      
-      // Also get profiles as backup
-      const { data: profiles, error: profilesError } = await supabase.from('profiles').select('*');
-      
+      // Get total users
+      const { data: { users: authUsers } } = await supabase.auth.admin.listUsers();
+      const { data: profiles } = await supabase.from('profiles').select('*');
       const totalUsers = authUsers?.length || profiles?.length || 0;
-      console.log("👥 User counts - Auth:", authUsers?.length, "Profiles:", profiles?.length, "Total:", totalUsers);
-
-      // Get other counts
-      const [
-        { count: totalTransactions },
-        { count: totalBudgets },
-        { count: totalGoals }
-      ] = await Promise.all([
-        supabase.from('transactions').select('*', { count: 'exact', head: true }),
-        supabase.from('budgets').select('*', { count: 'exact', head: true }),
-        supabase.from('goals').select('*', { count: 'exact', head: true })
-      ]);
 
       // Calculate active users (last 30 days)
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      
       const activeUsers = authUsers?.filter(user => {
         if (!user.last_sign_in_at) return false;
-        try {
-          const lastSignIn = new Date(user.last_sign_in_at);
-          return lastSignIn > thirtyDaysAgo;
-        } catch {
-          return false;
-        }
+        return new Date(user.last_sign_in_at) > thirtyDaysAgo;
       }).length || 0;
+
+      // Get transactions data
+      const { data: transactions, count: totalTransactions } = await supabase
+        .from('transactions')
+        .select('*', { count: 'exact', head: true });
+
+      // Calculate transaction volume
+      const { data: allTransactions } = await supabase
+        .from('transactions')
+        .select('amount, direction');
+      
+      const transactionVolume = allTransactions?.reduce((total, tx) => {
+        return total + (tx.amount || 0);
+      }, 0) || 0;
+
+      // Get goals data
+      const { data: goals } = await supabase.from('goals').select('*');
+      const totalGoals = goals?.length || 0;
+      const completedGoals = goals?.filter(goal => goal.is_completed).length || 0;
+      const goalCompletionRate = totalGoals > 0 ? Math.round((completedGoals / totalGoals) * 100) : 0;
+
+      // Get bill reminders data (you might need to create this table)
+      const { data: billReminders } = await supabase.from('bill_reminders').select('*');
+      const totalBillReminders = billReminders?.length || 0;
+      
+      // Calculate upcoming bill reminders (within next 7 days)
+      const nextWeek = new Date();
+      nextWeek.setDate(nextWeek.getDate() + 7);
+      const upcomingBillReminders = billReminders?.filter(bill => {
+        const dueDate = new Date(bill.due_date);
+        return dueDate <= nextWeek && dueDate >= new Date() && !bill.is_paid;
+      }).length || 0;
+
+      // Calculate bill reminder completion rate
+      const paidBills = billReminders?.filter(bill => bill.is_paid).length || 0;
+      const billReminderCompletionRate = totalBillReminders > 0 ? Math.round((paidBills / totalBillReminders) * 100) : 0;
 
       const directData: AnalyticsData = {
         overview: {
-          totalUsers: totalUsers,
-          activeUsers: activeUsers,
+          totalUsers,
+          activeUsers,
           totalTransactions: totalTransactions || 0,
-          transactionVolume: 0,
-          totalBudgets: totalBudgets || 0,
-          totalGoals: totalGoals || 0,
-          savingsRate: 15
+          transactionVolume,
+          totalGoals,
+          completedGoals,
+          totalBillReminders,
+          upcomingBillReminders
         },
         financialHealth: {
-          averageSavingsRate: 15,
-          budgetAdherence: 72,
-          goalCompletionRate: 45,
-          riskProfiles: {
-            healthy: 45,
-            moderate: 35,
-            atRisk: 20
-          }
+          goalCompletionRate,
+          billReminderCompletionRate
         },
         userEngagement: {
           dailyActive: Math.round(totalUsers * 0.3),
@@ -165,27 +152,25 @@ export default function AdminReportsScreen({ navigation }: Props) {
         insights: {
           topPerforming: [
             `Platform has ${totalUsers} registered users`,
-            `${activeUsers} active users in the last 30 days`,
-            `${totalTransactions || 0} transactions processed`
+            `Active user rate: ${Math.round((activeUsers / totalUsers) * 100)}%`,
+            `Total transaction volume: KSH ${transactionVolume.toLocaleString()}`
           ],
           areasOfConcern: [
-            totalGoals === 0 ? "No financial goals set yet" : "Goal completion rates need improvement",
-            totalBudgets === 0 ? "Budget features not being utilized" : "Budget adherence monitoring needed",
+            goalCompletionRate < 50 ? "Goal completion can be improved" : "Goal tracking is effective",
+            totalBillReminders === 0 ? "Bill reminder feature not being utilized" : "Bill management needs attention",
             activeUsers < totalUsers * 0.5 ? "User engagement needs improvement" : "Maintain current engagement levels"
           ],
           recommendations: [
-            "Promote goal-setting features to users",
-            "Implement budget tracking reminders",
-            "Add spending analytics for users"
+            "Implement user onboarding tutorials",
+            "Add spending categorization features",
+            "Create savings challenge programs"
           ]
         }
       };
 
-      console.log("✅ Direct analytics loaded. Total users:", directData.overview.totalUsers);
       setAnalytics(directData);
-      
-    } catch (error: any) {
-      console.error('💀 Direct analytics also failed:', error);
+    } catch (error) {
+      console.error('Error loading analytics:', error);
       Alert.alert('Error', 'Failed to load analytics data. Please check your connection.');
     }
   };
@@ -197,262 +182,60 @@ export default function AdminReportsScreen({ navigation }: Props) {
 
   const generatePDF = async () => {
     if (!analytics) return;
-    
     try {
       setPdfGenerating(true);
       
       const htmlContent = `
-        <!DOCTYPE html>
         <html>
-        <head>
-            <meta charset="UTF-8">
+          <head>
             <style>
-                body { 
-                    font-family: Arial, sans-serif; 
-                    margin: 40px; 
-                    line-height: 1.6;
-                    color: #333;
-                }
-                .header { 
-                    text-align: center; 
-                    border-bottom: 2px solid #3B82F6; 
-                    padding-bottom: 20px; 
-                    margin-bottom: 30px; 
-                }
-                .header h1 {
-                    color: #3B82F6;
-                    margin: 0;
-                }
-                .section { 
-                    margin-bottom: 30px; 
-                    page-break-inside: avoid;
-                }
-                .section h2 {
-                    color: #1F2937;
-                    border-bottom: 1px solid #E5E7EB;
-                    padding-bottom: 8px;
-                }
-                .metric-grid { 
-                    display: grid; 
-                    grid-template-columns: 1fr 1fr; 
-                    gap: 15px; 
-                    margin: 20px 0; 
-                }
-                .metric-card { 
-                    border: 1px solid #E5E7EB; 
-                    padding: 20px; 
-                    border-radius: 8px; 
-                    text-align: center;
-                    background: #F9FAFB;
-                }
-                .metric-value { 
-                    font-size: 28px; 
-                    font-weight: bold; 
-                    color: #3B82F6; 
-                    margin-bottom: 5px;
-                }
-                .metric-label { 
-                    font-size: 14px; 
-                    color: #6B7280; 
-                    font-weight: 600;
-                }
-                .insight-box { 
-                    background: #F8FAFC; 
-                    padding: 20px; 
-                    border-radius: 8px; 
-                    margin: 15px 0; 
-                    border-left: 4px solid #3B82F6;
-                }
-                .insight-box.warning {
-                    border-left-color: #F59E0B;
-                    background: #FFFBEB;
-                }
-                .insight-box.success {
-                    border-left-color: #10B981;
-                    background: #ECFDF5;
-                }
-                .risk-item { 
-                    display: flex; 
-                    justify-content: space-between; 
-                    margin: 8px 0; 
-                    padding: 8px 0;
-                    border-bottom: 1px solid #E5E7EB;
-                }
-                .progress-bar { 
-                    background: #E5E7EB; 
-                    height: 10px; 
-                    border-radius: 5px; 
-                    margin: 15px 0; 
-                    overflow: hidden;
-                }
-                .progress-fill { 
-                    background: #10B981; 
-                    height: 100%; 
-                    border-radius: 5px;
-                }
-                .footer {
-                    margin-top: 40px;
-                    text-align: center;
-                    color: #6B7280;
-                    font-size: 12px;
-                    border-top: 1px solid #E5E7EB;
-                    padding-top: 20px;
-                }
+              body { font-family: Arial, sans-serif; margin: 40px; }
+              h1 { color: #333; border-bottom: 2px solid #333; padding-bottom: 10px; }
+              .section { margin: 30px 0; }
+              .metric { background: #f5f5f5; padding: 20px; margin: 10px 0; border-radius: 8px; }
+              .metric-value { font-size: 24px; font-weight: bold; color: #007AFF; }
+              .insight-item { margin: 10px 0; padding: 10px; border-left: 4px solid #007AFF; background: #f8f9fa; }
             </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>Financial Analytics Report</h1>
-                <p>Generated on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
-                <p><strong>Reporting Period:</strong> ${timeRange.charAt(0).toUpperCase() + timeRange.slice(1)}</p>
-            </div>
-            
+          </head>
+          <body>
+            <h1>Financial Analytics Report</h1>
             <div class="section">
-                <h2>📊 Executive Summary</h2>
-                <div class="metric-grid">
-                    <div class="metric-card">
-                        <div class="metric-value">${analytics.overview.totalUsers}</div>
-                        <div class="metric-label">Total Registered Users</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-value">${analytics.overview.activeUsers}</div>
-                        <div class="metric-label">Active Users (30 days)</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-value">${analytics.overview.totalTransactions}</div>
-                        <div class="metric-label">Total Transactions</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-value">${analytics.overview.savingsRate}%</div>
-                        <div class="metric-label">Platform Savings Rate</div>
-                    </div>
-                </div>
+              <h2>Platform Overview</h2>
+              <div class="metric">
+                <div>Total Users: <span class="metric-value">${analytics.overview.totalUsers}</span></div>
+                <div>Active Users: <span class="metric-value">${analytics.overview.activeUsers}</span></div>
+                <div>Transactions: <span class="metric-value">${analytics.overview.totalTransactions}</span></div>
+                <div>Transaction Volume: <span class="metric-value">KSH ${analytics.overview.transactionVolume.toLocaleString()}</span></div>
+              </div>
             </div>
-
             <div class="section">
-                <h2>💚 Financial Health Overview</h2>
-                
-                <p><strong>Budget Adherence Rate:</strong> ${analytics.financialHealth.budgetAdherence}%</p>
-                <div class="progress-bar">
-                    <div class="progress-fill" style="width: ${analytics.financialHealth.budgetAdherence}%"></div>
-                </div>
-                
-                <p><strong>Goal Completion Rate:</strong> ${analytics.financialHealth.goalCompletionRate}%</p>
-                <div class="progress-bar">
-                    <div class="progress-fill" style="width: ${analytics.financialHealth.goalCompletionRate}%"></div>
-                </div>
-                
-                <h3>User Risk Distribution</h3>
-                <div class="risk-item">
-                    <span><strong>Healthy Financial Status</strong></span>
-                    <span><strong>${analytics.financialHealth.riskProfiles.healthy}%</strong></span>
-                </div>
-                <div class="risk-item">
-                    <span>Moderate Financial Status</span>
-                    <span>${analytics.financialHealth.riskProfiles.moderate}%</span>
-                </div>
-                <div class="risk-item">
-                    <span>At-Risk Financial Status</span>
-                    <span>${analytics.financialHealth.riskProfiles.atRisk}%</span>
-                </div>
+              <h2>Financial Health</h2>
+              <div class="metric">
+                <div>Goal Completion: <span class="metric-value">${analytics.financialHealth.goalCompletionRate}%</span></div>
+                <div>Bill Reminder Completion: <span class="metric-value">${analytics.financialHealth.billReminderCompletionRate}%</span></div>
+              </div>
             </div>
-
             <div class="section">
-                <h2>👥 User Engagement Metrics</h2>
-                <div class="metric-grid">
-                    <div class="metric-card">
-                        <div class="metric-value">${analytics.userEngagement.dailyActive}</div>
-                        <div class="metric-label">Daily Active Users</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-value">${analytics.userEngagement.weeklyActive}</div>
-                        <div class="metric-label">Weekly Active Users</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-value">${analytics.userEngagement.monthlyActive}</div>
-                        <div class="metric-label">Monthly Active Users</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-value">${Math.round((analytics.overview.activeUsers / analytics.overview.totalUsers) * 100)}%</div>
-                        <div class="metric-label">Active User Rate</div>
-                    </div>
-                </div>
+              <h2>Strategic Insights</h2>
+              <h3>Top Performing Areas</h3>
+              ${analytics.insights.topPerforming.map(insight => `<div class="insight-item">${insight}</div>`).join('')}
+              <h3>Areas for Improvement</h3>
+              ${analytics.insights.areasOfConcern.map(insight => `<div class="insight-item">${insight}</div>`).join('')}
+              <h3>Recommended Actions</h3>
+              ${analytics.insights.recommendations.map(insight => `<div class="insight-item">${insight}</div>`).join('')}
             </div>
-
-            <div class="section">
-                <h2>🔍 Strategic Insights & Recommendations</h2>
-                
-                <div class="insight-box success">
-                    <h3>✅ Top Performing Areas</h3>
-                    ${analytics.insights.topPerforming.map(insight => `<p>• ${insight}</p>`).join('')}
-                </div>
-                
-                <div class="insight-box warning">
-                    <h3>⚠️ Areas for Improvement</h3>
-                    ${analytics.insights.areasOfConcern.map(concern => `<p>• ${concern}</p>`).join('')}
-                </div>
-                
-                <div class="insight-box">
-                    <h3>🎯 Recommended Strategic Actions</h3>
-                    ${analytics.insights.recommendations.map(rec => `<p>• ${rec}</p>`).join('')}
-                </div>
-            </div>
-
-            <div class="footer">
-                <p>Confidential Financial Analytics Report • Generated by FinanceApp Analytics</p>
-                <p>For internal use only</p>
-            </div>
-        </body>
+          </body>
         </html>
       `;
 
-      const { uri } = await Print.printToFileAsync({ 
-        html: htmlContent,
-        width: 612,
-        height: 792,
-        margins: {
-          left: 40,
-          top: 40,
-          right: 40,
-          bottom: 40
-        }
-      });
-      
-      if (Platform.OS === 'ios') {
-        await Sharing.shareAsync(uri);
-      } else {
-        // For Android, use Sharing directly
-        await Sharing.shareAsync(uri);
-      }
-      
+      const { uri } = await Print.printToFileAsync({ html: htmlContent });
+      await Sharing.shareAsync(uri);
       Alert.alert('Success', 'PDF report generated successfully!');
-      
     } catch (error: any) {
-      console.error('Error generating PDF:', error);
       Alert.alert('Error', 'Failed to generate PDF report: ' + error.message);
     } finally {
       setPdfGenerating(false);
     }
-  };
-
-  const formatNumber = (num: number) => {
-    return new Intl.NumberFormat().format(num);
-  };
-
-  const renderProgressBar = (percentage: number, color: string) => {
-    return (
-      <View style={[styles.progressTrack, { backgroundColor: colors.border }]}>
-        <View 
-          style={[
-            styles.progressFill, 
-            { 
-              width: `${Math.min(percentage, 100)}%`,
-              backgroundColor: color
-            }
-          ]} 
-        />
-      </View>
-    );
   };
 
   if (loading && !refreshing) {
@@ -467,34 +250,151 @@ export default function AdminReportsScreen({ navigation }: Props) {
   }
 
   return (
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={styles.content}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-          colors={[colors.primary]}
-          tintColor={colors.primary}
-        />
-      }
-    >
-      <View style={styles.header}>
-        <View>
-          <Text style={[styles.title, { color: colors.text }]}>
-            Financial Analytics
-          </Text>
-          <Text style={[styles.subtitle, { color: colors.subtitle }]}>
-            Real-time platform insights and performance metrics
-          </Text>
-          {analytics && (
-            <Text style={[styles.userCount, { color: colors.primary }]}>
-              {analytics.overview.totalUsers} Total Users • {analytics.overview.activeUsers} Active
+    <View style={{ flex: 1 }}>
+      <ScrollView
+        style={[styles.container, { backgroundColor: colors.background }]}
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[colors.primary]}
+            tintColor={colors.primary}
+          />
+        }
+      >
+        <View style={styles.header}>
+          <View>
+            <Text style={[styles.title, { color: colors.text }]}>Financial Analytics</Text>
+            <Text style={[styles.subtitle, { color: colors.subtitle }]}>
+              Real-time platform insights and performance metrics
             </Text>
-          )}
+            {analytics && (
+              <Text style={[styles.userCount, { color: colors.primary }]}>
+                {analytics.overview.totalUsers} Total Users • {analytics.overview.activeUsers} Active
+              </Text>
+            )}
+          </View>
         </View>
-        <TouchableOpacity 
-          style={[styles.exportButton, { backgroundColor: colors.primary, opacity: pdfGenerating ? 0.6 : 1 }]}
+
+        {!analytics ? (
+          <View style={styles.emptyState}>
+            <Ionicons name="analytics-outline" size={64} color={colors.subtitle} />
+            <Text style={[styles.emptyText, { color: colors.text }]}>No analytics data available</Text>
+            <TouchableOpacity 
+              style={[styles.retryButton, { backgroundColor: colors.primary }]}
+              onPress={loadAnalytics}
+            >
+              <Text style={styles.retryButtonText}>Try Again</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <>
+            {/* Platform Overview */}
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Platform Overview</Text>
+              <View style={styles.metricsGrid}>
+                <View style={[styles.metricCard, { backgroundColor: colors.cardBackground }]}>
+                  <Text style={[styles.metricValue, { color: colors.primary }]}>
+                    {analytics.overview.totalUsers}
+                  </Text>
+                  <Text style={[styles.metricLabel, { color: colors.subtitle }]}>Total Users</Text>
+                </View>
+                <View style={[styles.metricCard, { backgroundColor: colors.cardBackground }]}>
+                  <Text style={[styles.metricValue, { color: colors.primary }]}>
+                    {analytics.overview.activeUsers}
+                  </Text>
+                  <Text style={[styles.metricLabel, { color: colors.subtitle }]}>Active Users</Text>
+                </View>
+                <View style={[styles.metricCard, { backgroundColor: colors.cardBackground }]}>
+                  <Text style={[styles.metricValue, { color: colors.primary }]}>
+                    {analytics.overview.totalTransactions}
+                  </Text>
+                  <Text style={[styles.metricLabel, { color: colors.subtitle }]}>Transactions</Text>
+                </View>
+                <View style={[styles.metricCard, { backgroundColor: colors.cardBackground }]}>
+                  <Text style={[styles.metricValue, { color: colors.primary }]}>
+                    KSH {analytics.overview.transactionVolume.toLocaleString()}
+                  </Text>
+                  <Text style={[styles.metricLabel, { color: colors.subtitle }]}>Transaction Volume</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Financial Health */}
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Financial Health</Text>
+              <View style={styles.metricsGrid}>
+                <View style={[styles.metricCard, { backgroundColor: colors.cardBackground }]}>
+                  <Text style={[styles.metricValue, { 
+                    color: analytics.financialHealth.goalCompletionRate >= 50 ? '#16a34a' : '#dc2626' 
+                  }]}>
+                    {analytics.financialHealth.goalCompletionRate}%
+                  </Text>
+                  <Text style={[styles.metricLabel, { color: colors.subtitle }]}>Goal Completion</Text>
+                  <Text style={[styles.metricSubtext, { color: colors.subtitle }]}>
+                    {analytics.overview.completedGoals} of {analytics.overview.totalGoals} goals
+                  </Text>
+                </View>
+                <View style={[styles.metricCard, { backgroundColor: colors.cardBackground }]}>
+                  <Text style={[styles.metricValue, { 
+                    color: analytics.financialHealth.billReminderCompletionRate >= 50 ? '#16a34a' : '#dc2626' 
+                  }]}>
+                    {analytics.financialHealth.billReminderCompletionRate}%
+                  </Text>
+                  <Text style={[styles.metricLabel, { color: colors.subtitle }]}>Bill Reminders</Text>
+                  <Text style={[styles.metricSubtext, { color: colors.subtitle }]}>
+                    {analytics.overview.upcomingBillReminders} upcoming
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Strategic Insights */}
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Strategic Insights</Text>
+              
+              <View style={[styles.insightCard, { backgroundColor: colors.cardBackground }]}>
+                <Text style={[styles.insightTitle, { color: colors.text }]}>Top Performing Areas</Text>
+                {analytics.insights.topPerforming.map((insight, index) => (
+                  <View key={index} style={styles.insightItem}>
+                    <View style={[styles.bullet, { backgroundColor: '#16a34a' }]} />
+                    <Text style={[styles.insightText, { color: colors.text }]}>{insight}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <View style={[styles.insightCard, { backgroundColor: colors.cardBackground }]}>
+                <Text style={[styles.insightTitle, { color: colors.text }]}>Areas for Improvement</Text>
+                {analytics.insights.areasOfConcern.map((insight, index) => (
+                  <View key={index} style={styles.insightItem}>
+                    <View style={[styles.bullet, { backgroundColor: '#dc2626' }]} />
+                    <Text style={[styles.insightText, { color: colors.text }]}>{insight}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <View style={[styles.insightCard, { backgroundColor: colors.cardBackground }]}>
+                <Text style={[styles.insightTitle, { color: colors.text }]}>Recommended Actions</Text>
+                {analytics.insights.recommendations.map((insight, index) => (
+                  <View key={index} style={styles.insightItem}>
+                    <View style={[styles.bullet, { backgroundColor: colors.primary }]} />
+                    <Text style={[styles.insightText, { color: colors.text }]}>{insight}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          </>
+        )}
+      </ScrollView>
+
+      {/* Floating Export PDF Button */}
+      {analytics && (
+        <TouchableOpacity
+          style={[
+            styles.floatingExportButton,
+            { backgroundColor: colors.primary, opacity: pdfGenerating ? 0.6 : 1 }
+          ]}
           onPress={generatePDF}
           disabled={pdfGenerating || !analytics}
         >
@@ -502,434 +402,124 @@ export default function AdminReportsScreen({ navigation }: Props) {
             <ActivityIndicator color="#fff" size="small" />
           ) : (
             <>
-              <Ionicons name="document-text-outline" size={20} color="#fff" />
-              <Text style={styles.exportButtonText}>Export PDF</Text>
+              <Ionicons name="document-text-outline" size={28} color="#fff" />
+              <Text style={styles.floatingExportButtonText}>Export PDF</Text>
             </>
           )}
         </TouchableOpacity>
-      </View>
-
-      {!analytics ? (
-        <View style={styles.emptyState}>
-          <Ionicons name="analytics-outline" size={64} color={colors.subtitle} />
-          <Text style={[styles.emptyText, { color: colors.text }]}>
-            No analytics data available
-          </Text>
-          <TouchableOpacity 
-            style={[styles.retryButton, { backgroundColor: colors.primary }]}
-            onPress={loadAnalytics}
-          >
-            <Text style={styles.retryButtonText}>Try Again</Text>
-          </TouchableOpacity>
-        </View>
-      ) : (
-        <>
-          {/* Executive Summary */}
-          <View style={[styles.section, { backgroundColor: colors.cardBackground }]}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              📊 Platform Overview
-            </Text>
-            <View style={styles.summaryGrid}>
-              <View style={styles.summaryItem}>
-                <Text style={[styles.summaryValue, { color: colors.primary }]}>
-                  {analytics.overview.totalUsers}
-                </Text>
-                <Text style={[styles.summaryLabel, { color: colors.subtitle }]}>
-                  Total Users
-                </Text>
-              </View>
-              <View style={styles.summaryItem}>
-                <Text style={[styles.summaryValue, { color: '#10B981' }]}>
-                  {analytics.overview.activeUsers}
-                </Text>
-                <Text style={[styles.summaryLabel, { color: colors.subtitle }]}>
-                  Active Users
-                </Text>
-              </View>
-              <View style={styles.summaryItem}>
-                <Text style={[styles.summaryValue, { color: '#3B82F6' }]}>
-                  {analytics.overview.totalTransactions}
-                </Text>
-                <Text style={[styles.summaryLabel, { color: colors.subtitle }]}>
-                  Transactions
-                </Text>
-              </View>
-              <View style={styles.summaryItem}>
-                <Text style={[styles.summaryValue, { color: '#8B5CF6' }]}>
-                  {analytics.overview.savingsRate}%
-                </Text>
-                <Text style={[styles.summaryLabel, { color: colors.subtitle }]}>
-                  Savings Rate
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Financial Health */}
-          <View style={[styles.section, { backgroundColor: colors.cardBackground }]}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              💚 Financial Wellness
-            </Text>
-            
-            <View style={styles.healthGrid}>
-              <View style={styles.healthMetric}>
-                <Text style={[styles.healthLabel, { color: colors.text }]}>Budget Adherence</Text>
-                {renderProgressBar(analytics.financialHealth.budgetAdherence, '#10B981')}
-                <Text style={[styles.healthValue, { color: colors.text }]}>
-                  {analytics.financialHealth.budgetAdherence}%
-                </Text>
-              </View>
-              
-              <View style={styles.healthMetric}>
-                <Text style={[styles.healthLabel, { color: colors.text }]}>Goal Completion</Text>
-                {renderProgressBar(analytics.financialHealth.goalCompletionRate, '#3B82F6')}
-                <Text style={[styles.healthValue, { color: colors.text }]}>
-                  {analytics.financialHealth.goalCompletionRate}%
-                </Text>
-              </View>
-            </View>
-
-            {/* Risk Distribution */}
-            <View style={styles.riskSection}>
-              <Text style={[styles.riskTitle, { color: colors.text }]}>User Risk Distribution</Text>
-              <View style={styles.riskGrid}>
-                <View style={styles.riskItem}>
-                  <View style={[styles.riskDot, { backgroundColor: '#10B981' }]} />
-                  <Text style={[styles.riskLabel, { color: colors.text }]}>Healthy</Text>
-                  <Text style={[styles.riskPercentage, { color: colors.primary }]}>
-                    {analytics.financialHealth.riskProfiles.healthy}%
-                  </Text>
-                </View>
-                <View style={styles.riskItem}>
-                  <View style={[styles.riskDot, { backgroundColor: '#F59E0B' }]} />
-                  <Text style={[styles.riskLabel, { color: colors.text }]}>Moderate</Text>
-                  <Text style={[styles.riskPercentage, { color: colors.primary }]}>
-                    {analytics.financialHealth.riskProfiles.moderate}%
-                  </Text>
-                </View>
-                <View style={styles.riskItem}>
-                  <View style={[styles.riskDot, { backgroundColor: '#EF4444' }]} />
-                  <Text style={[styles.riskLabel, { color: colors.text }]}>At Risk</Text>
-                  <Text style={[styles.riskPercentage, { color: colors.primary }]}>
-                    {analytics.financialHealth.riskProfiles.atRisk}%
-                  </Text>
-                </View>
-              </View>
-            </View>
-          </View>
-
-          {/* User Engagement */}
-          <View style={[styles.section, { backgroundColor: colors.cardBackground }]}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              👥 User Engagement
-            </Text>
-            
-            <View style={styles.engagementGrid}>
-              <View style={styles.engagementItem}>
-                <Ionicons name="calendar-outline" size={24} color={colors.primary} />
-                <Text style={[styles.engagementValue, { color: colors.text }]}>
-                  {analytics.userEngagement.dailyActive}
-                </Text>
-                <Text style={[styles.engagementLabel, { color: colors.subtitle }]}>
-                  Daily Active
-                </Text>
-              </View>
-              <View style={styles.engagementItem}>
-                <Ionicons name="time-outline" size={24} color={colors.primary} />
-                <Text style={[styles.engagementValue, { color: colors.text }]}>
-                  {analytics.userEngagement.weeklyActive}
-                </Text>
-                <Text style={[styles.engagementLabel, { color: colors.subtitle }]}>
-                  Weekly Active
-                </Text>
-              </View>
-              <View style={styles.engagementItem}>
-                <Ionicons name="people-outline" size={24} color={colors.primary} />
-                <Text style={[styles.engagementValue, { color: colors.text }]}>
-                  {analytics.userEngagement.monthlyActive}
-                </Text>
-                <Text style={[styles.engagementLabel, { color: colors.subtitle }]}>
-                  Monthly Active
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Strategic Insights */}
-          <View style={[styles.section, { backgroundColor: colors.cardBackground }]}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              🔍 Strategic Insights
-            </Text>
-
-            <View style={styles.insightBox}>
-              <View style={[styles.insightHeader, { backgroundColor: '#10B98120' }]}>
-                <Ionicons name="trending-up" size={20} color="#10B981" />
-                <Text style={[styles.insightHeaderText, { color: '#10B981' }]}>
-                  Top Performing Areas
-                </Text>
-              </View>
-              <View style={styles.insightContent}>
-                {analytics.insights.topPerforming.map((insight, index) => (
-                  <Text key={index} style={[styles.insightText, { color: colors.text }]}>
-                    • {insight}
-                  </Text>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.insightBox}>
-              <View style={[styles.insightHeader, { backgroundColor: '#F59E0B20' }]}>
-                <Ionicons name="warning" size={20} color="#F59E0B" />
-                <Text style={[styles.insightHeaderText, { color: '#F59E0B' }]}>
-                  Areas for Improvement
-                </Text>
-              </View>
-              <View style={styles.insightContent}>
-                {analytics.insights.areasOfConcern.map((concern, index) => (
-                  <Text key={index} style={[styles.insightText, { color: colors.text }]}>
-                    • {concern}
-                  </Text>
-                ))}
-              </View>
-            </View>
-
-            <View style={[styles.recommendationBox, { backgroundColor: colors.primary + '10' }]}>
-              <Text style={[styles.recommendationTitle, { color: colors.primary }]}>
-                🎯 Recommended Actions
-              </Text>
-              {analytics.insights.recommendations.map((recommendation, index) => (
-                <View key={index} style={styles.recommendationItem}>
-                  <Ionicons name="chevron-forward" size={16} color={colors.primary} />
-                  <Text style={[styles.recommendationText, { color: colors.text }]}>
-                    {recommendation}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          </View>
-        </>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { padding: spacing.lg, paddingBottom: spacing.xl },
-  center: { 
+  center: { flex: 1, justifyContent: "center", alignItems: "center", padding: spacing.lg },
+  header: { marginBottom: spacing.lg },
+  title: { fontSize: 28, fontWeight: "700", marginBottom: 4 },
+  subtitle: { fontSize: 16, marginBottom: 4 },
+  userCount: { fontSize: 14, fontWeight: '600' },
+  loadingText: { marginTop: spacing.md, fontSize: 16 },
+  emptyState: { alignItems: 'center', padding: spacing.xl, paddingVertical: spacing.xxl },
+  emptyText: { fontSize: 18, fontWeight: '600', marginTop: spacing.lg, marginBottom: spacing.md, textAlign: 'center' },
+  retryButton: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderRadius: radius.md },
+  retryButtonText: { color: '#fff', fontWeight: '600' },
+
+  // Sections
+  section: { marginBottom: spacing.xl },
+  sectionTitle: { fontSize: 20, fontWeight: '700', marginBottom: spacing.md },
+
+  // Metrics Grid
+  metricsGrid: { 
+    flexDirection: 'row', 
+    flexWrap: 'wrap', 
+    gap: spacing.md 
+  },
+  metricCard: { 
     flex: 1, 
-    justifyContent: "center", 
-    alignItems: "center",
-    padding: spacing.lg 
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: spacing.lg,
-  },
-  title: { 
-    fontSize: 28, 
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 16,
-    marginBottom: 4,
-  },
-  userCount: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  exportButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.md,
-    gap: spacing.xs,
-  },
-  exportButtonText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  loadingText: {
-    marginTop: spacing.md,
-    fontSize: 16,
-  },
-  emptyState: {
-    alignItems: 'center',
-    padding: spacing.xl,
-    paddingVertical: spacing.xxl,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: '600',
-    marginTop: spacing.lg,
-    marginBottom: spacing.md,
-    textAlign: 'center',
-  },
-  retryButton: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    borderRadius: radius.md,
-  },
-  retryButtonText: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  section: {
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-    marginBottom: spacing.lg,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    marginBottom: spacing.lg,
-  },
-  // Summary Grid
-  summaryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.md,
-  },
-  summaryItem: {
-    flex: 1,
     minWidth: '45%',
+    padding: spacing.lg,
+    borderRadius: radius.lg,
     alignItems: 'center',
-    padding: spacing.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 3,
   },
-  summaryValue: {
-    fontSize: 24,
-    fontWeight: '800',
-    marginBottom: spacing.xs,
+  metricValue: { 
+    fontSize: 24, 
+    fontWeight: '700', 
+    marginBottom: spacing.xs 
   },
-  summaryLabel: {
+  metricLabel: { 
+    fontSize: 14, 
+    fontWeight: '600',
+    textAlign: 'center'
+  },
+  metricSubtext: {
     fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
+    marginTop: spacing.xs,
+    textAlign: 'center'
   },
-  // Health Metrics
-  healthGrid: {
-    gap: spacing.lg,
-    marginBottom: spacing.lg,
+
+  // Insight Cards
+  insightCard: {
+    padding: spacing.lg,
+    borderRadius: radius.lg,
+    marginBottom: spacing.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 3,
   },
-  healthMetric: {
-    gap: spacing.sm,
-  },
-  healthLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  progressTrack: {
-    height: 8,
-    borderRadius: 4,
-    overflow: 'hidden',
-  },
-  progressFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  healthValue: {
+  insightTitle: {
     fontSize: 16,
     fontWeight: '700',
-    alignSelf: 'flex-end',
-  },
-  // Risk Distribution
-  riskSection: {
-    marginTop: spacing.lg,
-  },
-  riskTitle: {
-    fontSize: 16,
-    fontWeight: '600',
     marginBottom: spacing.md,
   },
-  riskGrid: {
-    gap: spacing.md,
-  },
-  riskItem: {
+  insightItem: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
+    alignItems: 'flex-start',
+    marginBottom: spacing.sm,
   },
-  riskDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-  },
-  riskLabel: {
-    flex: 1,
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  riskPercentage: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  // User Engagement
-  engagementGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  engagementItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  engagementValue: {
-    fontSize: 20,
-    fontWeight: '700',
-    marginTop: spacing.sm,
-    marginBottom: spacing.xs,
-  },
-  engagementLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  // Insights
-  insightBox: {
-    marginBottom: spacing.lg,
-    borderRadius: radius.md,
-    overflow: 'hidden',
-  },
-  insightHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: spacing.md,
-    gap: spacing.sm,
-  },
-  insightHeaderText: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  insightContent: {
-    padding: spacing.md,
+  bullet: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: 6,
+    marginRight: spacing.md,
   },
   insightText: {
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: spacing.sm,
-  },
-  recommendationBox: {
-    borderRadius: radius.md,
-    padding: spacing.lg,
-  },
-  recommendationTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: spacing.md,
-  },
-  recommendationItem: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.sm,
-    marginBottom: spacing.sm,
-  },
-  recommendationText: {
-    fontSize: 14,
-    lineHeight: 20,
     flex: 1,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+
+  // Floating Export Button
+  floatingExportButton: {
+    position: 'absolute',
+    bottom: spacing.lg,
+    right: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: 50,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    zIndex: 100,
+  },
+  floatingExportButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 16,
+    marginLeft: spacing.sm,
   },
 });

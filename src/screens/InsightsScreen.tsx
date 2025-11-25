@@ -1,4 +1,4 @@
-// screens/InsightsScreen.tsx
+// screens/InsightsScreen.tsx - FIXED VERSION
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View,
@@ -11,8 +11,9 @@ import {
   Alert,
   Platform,
 } from "react-native";
-import { supabase, getCurrentUser, clearAuthSession } from "../supabaseClient";
+import { supabase, getCurrentUser } from "../supabaseClient";
 import { useTheme } from "../hooks/useTheme";
+import { getApiBase } from "../utils/api";
 
 type TxRow = {
   amount: number;
@@ -24,7 +25,7 @@ type TxRow = {
 };
 
 type SpendingProfile = {
-  type: "high_saver" | "moderate_spender" | "overspender" | "balanced" | "insufficient_data" | "no_spending_data";
+  type: "high_saver" | "moderate_spender" | "overspender" | "balanced" | "insufficient_data";
   confidence: number;
   description: string;
   strengths: string[];
@@ -39,93 +40,11 @@ type SpendingProfile = {
   };
 };
 
-type MLRecommendation = {
-  category: "savings" | "spending" | "income" | "budgeting" | "investing" | "behavior";
-  priority: "high" | "medium" | "low";
-  title: string;
-  description: string;
-  action: string;
-  impact: string;
-};
-
 type MLInsights = {
   spending_profile: SpendingProfile;
-  recommendations: MLRecommendation[];
+  recommendations: any[];
   trends: any;
   risk_assessment: any;
-};
-
-// 🚀 PERMANENT SOLUTION - Ngrok URL
-const FASTAPI_URL = Platform.OS === 'web' 
-  ? "http://localhost:8080" 
-  : "https://fa9e4969232e.ngrok-free.app";
-
-// Enhanced mock data based on your transaction patterns
-const mockMLInsights: MLInsights = {
-  spending_profile: {
-    type: "moderate_spender",
-    confidence: 0.85,
-    description: "Based on your transaction patterns, you're maintaining moderate spending habits with significant P2P transactions.",
-    strengths: ["Active financial tracking", "Regular income patterns", "Good transaction diversity"],
-    areas_for_improvement: ["Savings rate optimization", "P2P spending management", "Budget allocation"],
-    metrics: {
-      savings_rate: 15.2,
-      total_income: 157770,
-      total_expenses: 133770,
-      avg_daily_spend: 4459,
-      top_category: "p2p",
-      top_category_percentage: 97.8
-    }
-  },
-  recommendations: [
-    {
-      category: "savings",
-      priority: "high",
-      title: "Boost Savings Rate",
-      description: "Current savings rate: 15.2% - Target: 20%+ for better financial security",
-      action: "Automate 10-15% of income to dedicated savings account each month",
-      impact: "Build emergency fund faster and improve long-term financial resilience"
-    },
-    {
-      category: "spending",
-      priority: "high",
-      title: "Optimize P2P Spending",
-      description: "P2P transactions consume 97.8% of your income - this is very concentrated",
-      action: "Set monthly budget limits for P2P transfers and track against them",
-      impact: "Better expense distribution and improved financial control"
-    },
-    {
-      category: "behavior",
-      priority: "medium",
-      title: "Consolidate Small Transactions",
-      description: "High frequency of small transactions detected in your spending patterns",
-      action: "Batch similar purchases and plan weekly instead of daily transactions",
-      impact: "Reduce transaction fees and improve spending tracking efficiency"
-    },
-    {
-      category: "budgeting",
-      priority: "medium",
-      title: "Create Spending Categories",
-      description: "Your transactions show potential for better categorization",
-      action: "Set up clear budget categories: Essentials, Discretionary, Savings, Investments",
-      impact: "Better financial visibility and intentional spending"
-    }
-  ],
-  trends: {
-    income_trend: "stable",
-    spending_trend: "consistent",
-    volatility: "low",
-    key_observations: [
-      "Strong P2P transaction pattern detected",
-      "Consistent income flow observed",
-      "Opportunity for better savings allocation"
-    ]
-  },
-  risk_assessment: {
-    level: "medium",
-    factors: ["high_p2p_concentration", "moderate_savings_rate"],
-    summary: "Primary risk: Over-reliance on P2P transactions. Consider diversifying financial activities."
-  }
 };
 
 function titleCase(str: string) {
@@ -151,15 +70,6 @@ function getMonthRange() {
   };
 }
 
-function getPriorityColor(priority: string, colors: any) {
-  switch (priority) {
-    case "high": return colors.danger || "#dc2626";
-    case "medium": return colors.warning || "#f59e0b";
-    case "low": return colors.success || "#16a34a";
-    default: return colors.subtitle;
-  }
-}
-
 function getProfileColor(profileType: string) {
   switch (profileType) {
     case "high_saver": return "#16a34a";
@@ -170,6 +80,38 @@ function getProfileColor(profileType: string) {
   }
 }
 
+function getProfileDescription(profileType: string, savingsRate: number) {
+  const descriptions = {
+    high_saver: {
+      title: "Super Saver",
+      subtitle: "You're excellent at saving money",
+      description: "Your savings habits are impressive. You consistently spend less than you earn and prioritize financial security."
+    },
+    balanced: {
+      title: "Balanced Spender", 
+      subtitle: "You maintain a healthy financial balance",
+      description: "You have good financial discipline with a balanced approach to spending and saving."
+    },
+    moderate_spender: {
+      title: "Moderate Spender",
+      subtitle: "Opportunity to improve savings",
+      description: "You're spending a bit more than ideal. Small adjustments could significantly boost your savings."
+    },
+    overspender: {
+      title: "Overspender",
+      subtitle: "Immediate attention needed",
+      description: "Your expenses exceed your income. Focus on essential spending and create a budget."
+    },
+    insufficient_data: {
+      title: "Insufficient Data",
+      subtitle: "Need more transaction history",
+      description: "We need more transaction data to analyze your spending behavior accurately."
+    }
+  };
+  
+  return descriptions[profileType as keyof typeof descriptions] || descriptions.insufficient_data;
+}
+
 export default function InsightsScreen() {
   const { colors } = useTheme();
   const [loading, setLoading] = useState(false);
@@ -178,48 +120,30 @@ export default function InsightsScreen() {
   const [expenses, setExpenses] = useState(0);
   const [spentByCat, setSpentByCat] = useState<Record<string, number>>({});
   const [mlInsights, setMlInsights] = useState<MLInsights | null>(null);
-  const [usingMockData, setUsingMockData] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [serverStatus, setServerStatus] = useState<string>('unknown');
+  const [backendUrl, setBackendUrl] = useState<string>('');
 
   const loadTransactions = useCallback(async () => {
     setLoading(true);
     setConnectionError(null);
     
     try {
-      console.log('🔐 Checking authentication...');
-      
-      // Use the new getCurrentUser function
       const user = await getCurrentUser();
       if (!user) {
         setConnectionError('Please log in to view transactions');
         return;
       }
 
-      const userId = user.id;
-      console.log('✅ User authenticated:', userId);
-
       const { start, end } = getMonthRange();
 
-      console.log('📊 Loading transactions for user:', userId);
       const { data: txData, error: txError } = await supabase
         .from("transactions")
         .select("amount, direction, category, occurred_at, method, counterparty")
-        .eq("user_id", userId)
+        .eq("user_id", user.id)
         .gte("occurred_at", start)
         .lt("occurred_at", end);
 
-      if (txError) {
-        console.error('❌ Transaction load error:', txError);
-        
-        if (txError.code === 'PGRST301' || txError.message.includes('JWT')) {
-          await clearAuthSession();
-          setConnectionError('Session expired. Please log in again.');
-          return;
-        }
-        
-        throw txError;
-      }
+      if (txError) throw txError;
 
       const txs: TxRow[] = (txData ?? []).map((t: any) => ({
         amount: Number(t.amount ?? 0),
@@ -230,11 +154,10 @@ export default function InsightsScreen() {
         counterparty: t.counterparty,
       }));
 
-      console.log(`✅ Loaded ${txs.length} transactions`);
-
       let inc = 0;
       let exp = 0;
       const catMap: Record<string, number> = {};
+      
       for (const t of txs) {
         if (t.direction === "credit") inc += t.amount;
         else {
@@ -248,91 +171,24 @@ export default function InsightsScreen() {
       setExpenses(exp);
       setSpentByCat(catMap);
 
-      // Generate ML insights if we have transactions
       if (txs.length > 0) {
-        console.log('🚀 Generating ML insights...');
-        await generateMLInsights(txs, userId);
+        await generateMLInsights(txs, user.id);
       } else {
-        console.log('ℹ️ No transactions to analyze');
         setMlInsights(null);
       }
     } catch (err: any) {
-      console.error('💥 Error loading transactions:', err);
-      
-      if (err.message?.includes('not authenticated') || err.message?.includes('JWT')) {
-        setConnectionError('Authentication error. Please log out and log in again.');
-      } else {
-        setConnectionError('Failed to load transactions: ' + err.message);
-      }
+      console.error('Error loading transactions:', err);
+      setConnectionError('Failed to load transactions');
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const testConnection = async () => {
-    try {
-      setGeneratingInsights(true);
-      setConnectionError(null);
-      
-      console.log(`🧪 Testing connection to: ${FASTAPI_URL}/health`);
-      console.log(`📍 Using Ngrok URL: ${FASTAPI_URL}`);
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-      
-      const response = await fetch(`${FASTAPI_URL}/health`, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'FinAccess-App/1.0.0'
-        }
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (response.ok) {
-        const data = await response.json();
-        setServerStatus('connected');
-        Alert.alert(
-          '✅ Connection Successful!', 
-          `ML server is reachable via Ngrok!\n\n🌐 Public URL: ${FASTAPI_URL}\n📊 Status: ${data.status}\n🔗 Type: Ngrok (Permanent)`
-        );
-        return true;
-      } else {
-        setServerStatus('failed');
-        Alert.alert('❌ Connection Failed', `Server returned HTTP ${response.status}`);
-        return false;
-      }
-    } catch (error: any) {
-      console.error('Connection test failed:', error);
-      setServerStatus('failed');
-      
-      let errorMsg = error.message;
-      if (error.name === 'AbortError') {
-        errorMsg = 'Timeout - Ngrok server not responding within 10 seconds';
-      } else if (error.message.includes('Failed to fetch') || error.message.includes('Network request failed')) {
-        errorMsg = `Cannot reach Ngrok server. Please check:\n• Ngrok is running: ngrok http 8080\n• Server is running: python start_server.py\n• Internet connection is stable`;
-      }
-      
-      Alert.alert(
-        '❌ Connection Failed', 
-        `${errorMsg}\n\n🌐 URL: ${FASTAPI_URL}`
-      );
-      setConnectionError(errorMsg);
-      return false;
-    } finally {
-      setGeneratingInsights(false);
-    }
-  };
-
   const generateMLInsights = async (transactions: TxRow[], userId: string) => {
     setGeneratingInsights(true);
-    setUsingMockData(false);
     setConnectionError(null);
     
     try {
-      // Transform transactions for the ML API
       const mlTransactions = transactions.map(tx => ({
         ts: tx.occurred_at,
         direction: tx.direction,
@@ -342,28 +198,18 @@ export default function InsightsScreen() {
         counterparty: tx.counterparty
       }));
 
-      console.log(`🔄 Connecting to ML server: ${FASTAPI_URL}/ml-insights`);
-      console.log(`📊 Sending ${mlTransactions.length} transactions for analysis`);
-      console.log(`🌐 Using Ngrok URL: ${FASTAPI_URL}`);
-      
-      // Test basic connectivity first
-      console.log('🧪 Testing Ngrok connection...');
-      const isConnected = await testConnection();
-      if (!isConnected) {
-        throw new Error('Ngrok server connection test failed. Using enhanced mock data.');
-      }
-
-      // Add timeout to the fetch request
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 second timeout for ML processing
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-      console.log('🚀 Sending transaction data to ML server...');
-      const response = await fetch(`${FASTAPI_URL}/ml-insights`, {
+      const currentBackendUrl = getApiBase();
+      setBackendUrl(currentBackendUrl);
+      
+      console.log('Calling ML insights at:', `${currentBackendUrl}/ml-insights`);
+
+      const response = await fetch(`${currentBackendUrl}/ml-insights`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'User-Agent': 'FinAccess-App/1.0.0'
         },
         body: JSON.stringify({
           transactions: mlTransactions,
@@ -375,133 +221,52 @@ export default function InsightsScreen() {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`❌ HTTP error! status: ${response.status}, response:`, errorText);
-        throw new Error(`ML server returned ${response.status}: ${errorText.substring(0, 100)}`);
+        throw new Error(`ML server error: ${response.status} - ${response.statusText}`);
       }
 
       const insights = await response.json();
-      console.log('✅ ML insights generated successfully via Ngrok!');
-      console.log('📈 Insights received:', Object.keys(insights));
+      console.log('ML insights received successfully');
       setMlInsights(insights);
-      setServerStatus('connected');
-      setUsingMockData(false);
       
     } catch (error: any) {
-      console.error('❌ Error generating ML insights:', error);
-      setServerStatus('failed');
+      console.error('ML insights failed:', error);
       
-      // Enhanced error diagnostics
-      let errorMessage = 'Unknown network error';
+      const errorMessage = error.name === 'AbortError' 
+        ? 'Request timeout - backend took too long to respond'
+        : error.message;
       
-      if (error.name === 'AbortError') {
-        errorMessage = 'Request timeout (20s) - ML processing is taking too long';
-      } else if (error.message.includes('Failed to fetch') || error.message.includes('Network request failed')) {
-        errorMessage = `Cannot connect to Ngrok server.\n\n🔧 Please verify:\n• Ngrok is running: ngrok http 8080\n• FastAPI server is running: python start_server.py\n• Internet connection is stable\n• Ngrok URL: ${FASTAPI_URL}`;
-      } else {
-        errorMessage = error.message;
+      setConnectionError(`ML Analysis Failed: ${errorMessage}`);
+      
+      // Smart fallback based on user's actual data
+      const currentSavingsRate = calculateSavingsRate(income, expenses);
+      let profileType: SpendingProfile['type'] = "insufficient_data";
+      
+      if (income > 0) {
+        if (currentSavingsRate >= 20) profileType = "high_saver";
+        else if (currentSavingsRate >= 0) profileType = "moderate_spender";
+        else profileType = "overspender";
       }
 
-      // Use enhanced mock data as fallback
-      console.log('🔄 Using enhanced mock data as fallback');
-      const currentSavingsRate = calculateSavingsRate(income, expenses);
-      
-      // Enhanced mock data based on actual transaction patterns - FIXED TYPE ERROR
-      const enhancedMockInsights: MLInsights = {
+      setMlInsights({
         spending_profile: {
-          type: transactions.length > 0 ? "moderate_spender" : "insufficient_data",
-          confidence: Math.min(0.8, transactions.length / 10),
-          description: transactions.length > 0 
-            ? "Based on your transaction patterns, you're maintaining moderate spending habits."
-            : "Not enough transaction data to generate personalized insights.",
-          strengths: transactions.length > 0 
-            ? ["Active financial tracking", "Regular transaction patterns"] 
-            : ["Ready to start tracking your finances"],
-          areas_for_improvement: transactions.length > 0 
-            ? ["Savings rate optimization", "Spending categorization"] 
-            : ["Start recording your income and expenses"],
-          metrics: transactions.length > 0 ? {
+          type: profileType,
+          confidence: 0.7,
+          description: getProfileDescription(profileType, currentSavingsRate).description,
+          strengths: ["Transaction tracking active"],
+          areas_for_improvement: ["Continue monitoring spending"],
+          metrics: {
             savings_rate: currentSavingsRate,
             total_income: income,
             total_expenses: expenses,
             avg_daily_spend: expenses > 0 ? expenses / 30 : 0,
-            top_category: Object.keys(spentByCat).length > 0 
-              ? Object.entries(spentByCat).sort((a, b) => b[1] - a[1])[0][0]
-              : "uncategorized",
-            top_category_percentage: Object.keys(spentByCat).length > 0 && income > 0
-              ? (Object.entries(spentByCat).sort((a, b) => b[1] - a[1])[0][1] / income * 100)
-              : 0
-          } : undefined
-        },
-        recommendations: transactions.length > 0 ? [
-          {
-            category: "savings" as const,
-            priority: currentSavingsRate < 10 ? "high" as const : "medium" as const,
-            title: currentSavingsRate < 0 ? "Address Cash Flow Issues" : "Optimize Savings",
-            description: currentSavingsRate < 0 
-              ? `Your expenses exceed income by ${Math.abs(currentSavingsRate).toFixed(1)}%. Focus on essential spending.`
-              : `Current savings rate: ${currentSavingsRate.toFixed(1)}%. Target 20% for better financial security.`,
-            action: currentSavingsRate < 0 
-              ? "Create a strict budget focusing on essential expenses only."
-              : "Automate 10-15% of income to savings each month.",
-            impact: "High - Improved financial stability"
-          },
-          {
-            category: "behavior" as const,
-            priority: "medium" as const,
-            title: "Enhance Transaction Categorization",
-            description: "Better categorization leads to more accurate insights and budgeting.",
-            action: "Consistently categorize all transactions with specific labels.",
-            impact: "Medium - Better financial visibility"
+            top_category: Object.keys(spentByCat)[0] || "none",
+            top_category_percentage: 0
           }
-        ] : [
-          {
-            category: "savings" as const,
-            priority: "high" as const,
-            title: "Start Tracking Your Finances",
-            description: "Begin recording your income and expenses to get personalized insights.",
-            action: "Add your first transaction to see ML-powered analysis.",
-            impact: "High - Foundation for financial improvement"
-          }
-        ],
-        trends: {
-          income_trend: "stable",
-          spending_trend: "stable",
-          volatility: "low",
-          key_observations: transactions.length > 0 
-            ? [`Analyzed ${transactions.length} transactions`, "Using demo insights - Ngrok connection issue"]
-            : ["No transaction data available for analysis"]
         },
-        risk_assessment: {
-          level: currentSavingsRate < 0 ? "high" : "low",
-          factors: currentSavingsRate < 0 ? ["negative_cash_flow"] : ["insufficient_data"],
-          summary: transactions.length > 0 
-            ? "Using demo data - connect via Ngrok for live ML analysis"
-            : "No data available for risk assessment"
-        }
-      };
-      
-      setMlInsights(enhancedMockInsights);
-      setUsingMockData(true);
-      setConnectionError(errorMessage);
-      
-      console.log(`
-🔧 NGROK TROUBLESHOOTING:
-📍 Your Ngrok URL: ${FASTAPI_URL}
-🚨 Required Services:
-
-1. ✅ FastAPI Server (Terminal 1):
-   python start_server.py
-
-2. ✅ Ngrok Tunnel (Terminal 2):
-   ngrok http 8080
-
-3. 📱 Test URL (Phone Browser):
-   ${FASTAPI_URL}/health
-
-💡 Tip: Ngrok URLs are permanent until you stop ngrok.
-Restarting ngrok gives you a new URL.
-      `);
+        recommendations: [],
+        trends: {},
+        risk_assessment: {}
+      });
     } finally {
       setGeneratingInsights(false);
     }
@@ -514,22 +279,6 @@ Restarting ngrok gives you a new URL.
   const net = income - expenses;
   const savingsRate = calculateSavingsRate(income, expenses);
 
-  const getStatusColor = () => {
-    switch (serverStatus) {
-      case 'connected': return '#16a34a';
-      case 'failed': return '#dc2626';
-      default: return '#6b7280';
-    }
-  };
-
-  const getStatusText = () => {
-    switch (serverStatus) {
-      case 'connected': return 'Connected via Ngrok ✓';
-      case 'failed': return 'Disconnected ✗';
-      default: return 'Checking...';
-    }
-  };
-
   const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background, padding: 16 },
     title: { fontSize: 26, fontWeight: "800", color: colors.text, marginBottom: 16 },
@@ -538,13 +287,13 @@ Restarting ngrok gives you a new URL.
     row: { flexDirection: "row", gap: 12, marginBottom: 12 },
     card: {
       backgroundColor: colors.cardBackground,
-      borderRadius: 12,
-      padding: 16,
+      borderRadius: 16,
+      padding: 20,
       marginBottom: 16,
       shadowColor: "#000",
-      shadowOpacity: 0.05,
-      shadowRadius: 4,
-      elevation: 2,
+      shadowOpacity: 0.1,
+      shadowRadius: 8,
+      elevation: 3,
     },
     label: { color: colors.subtitle, fontSize: 12, fontWeight: "700", marginBottom: 6 },
     val: { fontSize: 18, fontWeight: "800" },
@@ -556,207 +305,133 @@ Restarting ngrok gives you a new URL.
     categoryName: { fontWeight: "600", color: colors.text, fontSize: 14 },
     categoryPercentage: { color: colors.subtitle, fontSize: 12 },
     categoryAmount: { fontWeight: "600", color: colors.text },
-    exportBtn: {
-      backgroundColor: colors.primary,
-      padding: 16,
-      borderRadius: 8,
-      alignItems: "center",
-      marginTop: 8,
-      marginBottom: 24,
-    },
-    exportText: { color: "#fff", fontWeight: "700", fontSize: 16 },
-    profileCard: {
-      backgroundColor: colors.cardBackground,
-      borderRadius: 12,
-      padding: 16,
+    profileHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
       marginBottom: 16,
-      borderLeftWidth: 4,
     },
-    recommendationCard: {
-      backgroundColor: colors.cardBackground,
-      borderRadius: 8,
-      padding: 12,
-      marginBottom: 8,
-      borderLeftWidth: 3,
+    profileTitle: {
+      fontSize: 20,
+      fontWeight: '800',
+      color: colors.text,
     },
-    recommendationTitle: { fontWeight: "700", fontSize: 14, marginBottom: 4 },
-    recommendationDesc: { fontSize: 12, color: colors.subtitle, marginBottom: 4 },
-    recommendationAction: { fontSize: 11, color: colors.text, fontStyle: "italic" },
-    priorityBadge: {
-      paddingHorizontal: 8,
-      paddingVertical: 2,
-      borderRadius: 4,
-      alignSelf: 'flex-start',
-      marginBottom: 8,
+    profileSubtitle: {
+      fontSize: 14,
+      color: colors.subtitle,
+      marginTop: 2,
     },
-    priorityText: { color: '#fff', fontSize: 10, fontWeight: '700' },
     confidenceBadge: {
-      paddingHorizontal: 8,
-      paddingVertical: 2,
-      borderRadius: 4,
-      backgroundColor: colors.subtitle,
+      backgroundColor: colors.primary,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 16,
       alignSelf: 'flex-start',
+      marginBottom: 12,
+    },
+    confidenceText: {
+      color: '#fff',
+      fontSize: 12,
+      fontWeight: '700',
+    },
+    metricGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      justifyContent: 'space-between',
+      marginTop: 16,
+    },
+    metricItem: {
+      width: '48%',
+      backgroundColor: 'rgba(0,0,0,0.03)',
+      padding: 12,
+      borderRadius: 12,
       marginBottom: 8,
     },
-    confidenceText: { color: '#fff', fontSize: 10, fontWeight: '700' },
-    mockDataNotice: {
-      backgroundColor: '#fef3c7',
-      padding: 12,
-      borderRadius: 8,
-      marginBottom: 16,
-      borderLeftWidth: 4,
-      borderLeftColor: '#f59e0b',
+    metricValue: {
+      fontSize: 16,
+      fontWeight: '700',
+      color: colors.text,
+      marginBottom: 2,
     },
-    mockDataText: {
-      color: '#92400e',
-      fontSize: 12,
+    metricLabel: {
+      fontSize: 11,
+      color: colors.subtitle,
       fontWeight: '600',
     },
-    connectionError: {
-      backgroundColor: '#fee2e2',
-      padding: 12,
-      borderRadius: 8,
-      marginBottom: 16,
-      borderLeftWidth: 4,
-      borderLeftColor: '#dc2626',
+    strengthItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    strengthDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: '#16a34a',
+      marginRight: 8,
+    },
+    improvementDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: '#dc2626',
+      marginRight: 8,
     },
     errorText: {
       color: '#dc2626',
       fontSize: 12,
       fontWeight: '600',
     },
-    connectionTest: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      backgroundColor: colors.cardBackground,
+    debugInfo: {
+      fontSize: 10,
+      color: colors.subtitle,
+      marginTop: 8,
+      fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    },
+    recommendationItem: {
+      backgroundColor: 'rgba(0,0,0,0.03)',
       padding: 12,
       borderRadius: 8,
-      marginBottom: 16,
-      borderLeftWidth: 4,
-      borderLeftColor: getStatusColor(),
-    },
-    serverInfoText: {
-      color: colors.subtitle,
-      fontSize: 12,
-      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    },
-    testButton: {
-      backgroundColor: colors.primary,
-      paddingHorizontal: 12,
-      paddingVertical: 6,
-      borderRadius: 6,
-    },
-    testButtonText: {
-      color: '#fff',
-      fontSize: 12,
-      fontWeight: '600',
-    },
-    serverInfo: {
-      backgroundColor: '#dbeafe',
-      padding: 8,
-      borderRadius: 6,
-      marginBottom: 12,
-    },
-    serverText: {
-      color: '#1e40af',
-      fontSize: 10,
-      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    },
-    statusIndicator: {
-      flexDirection: 'row',
-      alignItems: 'center',
       marginBottom: 8,
+      borderLeftWidth: 3,
     },
-    statusDot: {
-      width: 8,
-      height: 8,
-      borderRadius: 4,
-      marginRight: 6,
-    },
-    statusText: {
-      fontSize: 12,
-      fontWeight: '600',
-    },
-    ngrokBadge: {
-      backgroundColor: '#7c3aed',
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      borderRadius: 12,
-      alignSelf: 'flex-start',
-      marginBottom: 8,
-    },
-    ngrokText: {
-      color: '#fff',
-      fontSize: 10,
+    recommendationTitle: {
+      fontSize: 14,
       fontWeight: '700',
+      color: colors.text,
+      marginBottom: 4,
+    },
+    recommendationDescription: {
+      fontSize: 12,
+      color: colors.subtitle,
+      lineHeight: 16,
     },
   });
+
+  const profileInfo = mlInsights ? getProfileDescription(mlInsights.spending_profile.type, savingsRate) : null;
+
+  // Get priority color for recommendations
+  const getPriorityColor = (priority: string) => {
+    switch (priority) {
+      case 'high': return '#dc2626';
+      case 'medium': return '#f59e0b';
+      case 'low': return '#16a34a';
+      default: return colors.primary;
+    }
+  };
 
   return (
     <ScrollView
       style={styles.container}
       refreshControl={<RefreshControl refreshing={loading} onRefresh={loadTransactions} />}
     >
-      <Text style={styles.title}>ML-Powered Financial Insights</Text>
-
-      {/* Connection Test Section */}
-      <View style={styles.connectionTest}>
-        <View>
-          <View style={styles.statusIndicator}>
-            <View style={[styles.statusDot, { backgroundColor: getStatusColor() }]} />
-            <Text style={[styles.statusText, { color: getStatusColor() }]}>
-              {getStatusText()}
-            </Text>
-          </View>
-          <View style={styles.ngrokBadge}>
-            <Text style={styles.ngrokText}>🌐 NGROK CONNECTION</Text>
-          </View>
-          <Text style={styles.serverInfoText}>
-            {FASTAPI_URL}
-          </Text>
-          <Text style={[styles.serverInfoText, {fontSize: 10, color: colors.primary}]}>
-            Permanent URL • Works Everywhere
-          </Text>
-        </View>
-        <TouchableOpacity 
-          style={styles.testButton}
-          onPress={testConnection}
-          disabled={generatingInsights}
-        >
-          <Text style={styles.testButtonText}>
-            {generatingInsights ? 'Testing...' : 'Test'}
-          </Text>
-        </TouchableOpacity>
-      </View>
+      <Text style={styles.title}>Financial Behavior Analysis</Text>
 
       {connectionError && (
-        <View style={styles.connectionError}>
+        <View style={{ backgroundColor: '#fee2e2', padding: 12, borderRadius: 8, marginBottom: 16 }}>
           <Text style={styles.errorText}>{connectionError}</Text>
-          <View style={styles.serverInfo}>
-            <Text style={styles.serverText}>
-              Server: {FASTAPI_URL}/ml-insights
-            </Text>
-            <Text style={styles.serverText}>
-              Status: Ngrok tunnel issue - Check both services are running
-            </Text>
-          </View>
-        </View>
-      )}
-
-      {usingMockData && (
-        <View style={styles.mockDataNotice}>
-          <Text style={styles.mockDataText}>
-            Using Demo Insights - Ngrok connection unavailable
-          </Text>
-          <View style={styles.serverInfo}>
-            <Text style={styles.serverText}>
-              Server: {FASTAPI_URL}/ml-insights
-            </Text>
-            <Text style={styles.serverText}>
-              Status: Using enhanced demo data - Check ngrok is running
-            </Text>
-          </View>
+          {backendUrl && (
+            <Text style={styles.debugInfo}>Backend URL: {backendUrl}</Text>
+          )}
         </View>
       )}
 
@@ -764,193 +439,210 @@ Restarting ngrok gives you a new URL.
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.loadingText}>
-            {generatingInsights ? "Generating AI insights via Ngrok..." : "Analyzing your financial patterns..."}
+            {generatingInsights ? "Analyzing your spending behavior..." : "Loading your transactions..."}
           </Text>
         </View>
       ) : (
         <>
-          {/* Basic Financial Overview */}
+          {/* Financial Overview */}
           <View style={styles.row}>
             <View style={styles.card}>
-              <Text style={styles.label}>Income</Text>
+              <Text style={styles.label}>Monthly Income</Text>
               <Text style={[styles.val, { color: "#16a34a" }]}>{currency(income)}</Text>
             </View>
             <View style={styles.card}>
-              <Text style={styles.label}>Expenses</Text>
+              <Text style={styles.label}>Monthly Expenses</Text>
               <Text style={[styles.val, { color: "#dc2626" }]}>{currency(expenses)}</Text>
             </View>
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.label}>Net Savings</Text>
+            <Text style={styles.label}>Net Savings This Month</Text>
             <Text style={[styles.big, { color: net >= 0 ? "#16a34a" : "#dc2626" }]}>
               {net >= 0 ? "+" : "-"}
               {currency(Math.abs(net))}
             </Text>
-            <Text style={styles.savingsRate}>Savings Rate: {savingsRate.toFixed(1)}%</Text>
-            {savingsRate < 10 && (
-              <Text style={[styles.savingsRate, { color: "#dc2626" }]}>
-                Aim for 20%+ for better financial security
-              </Text>
-            )}
+            <Text style={styles.savingsRate}>
+              Savings Rate: {savingsRate.toFixed(1)}% • 
+              {savingsRate >= 20 ? " Excellent" : 
+               savingsRate >= 10 ? " Good" : 
+               savingsRate >= 0 ? " Needs improvement" : " Critical"}
+            </Text>
           </View>
 
-          {/* ML Insights Section */}
-          {mlInsights && (
-            <>
-              {/* Spending Profile */}
-              <View style={[
-                styles.profileCard, 
-                { borderLeftColor: getProfileColor(mlInsights.spending_profile.type) }
-              ]}>
-                <View style={styles.confidenceBadge}>
-                  <Text style={styles.confidenceText}>
-                    {Math.round(mlInsights.spending_profile.confidence * 100)}% Confidence
-                  </Text>
+          {/* Behavior Classification */}
+          {mlInsights && profileInfo && (
+            <View style={[
+              styles.card, 
+              { borderLeftWidth: 6, borderLeftColor: getProfileColor(mlInsights.spending_profile.type) }
+            ]}>
+              <View style={styles.profileHeader}>
+                <View>
+                  <Text style={styles.profileTitle}>{profileInfo.title}</Text>
+                  <Text style={styles.profileSubtitle}>{profileInfo.subtitle}</Text>
                 </View>
-                {!usingMockData && (
-                  <View style={styles.ngrokBadge}>
-                    <Text style={styles.ngrokText}>✅ LIVE ML ANALYSIS</Text>
-                  </View>
-                )}
-                <Text style={styles.sectionTitle}>Your Financial Profile</Text>
-                <Text style={[styles.val, { marginBottom: 8, color: getProfileColor(mlInsights.spending_profile.type) }]}>
-                  {titleCase(mlInsights.spending_profile.type.replace('_', ' '))}
-                </Text>
-                <Text style={{ color: colors.text, marginBottom: 12, lineHeight: 20 }}>
-                  {mlInsights.spending_profile.description}
-                </Text>
-                
-                {mlInsights.spending_profile.metrics && (
-                  <View style={{ marginTop: 8 }}>
-                    <Text style={[styles.label, { marginBottom: 4 }]}>Key Metrics:</Text>
-                    <Text style={{ color: colors.subtitle, fontSize: 12, lineHeight: 18 }}>
-                      • Savings Rate: {mlInsights.spending_profile.metrics.savings_rate.toFixed(1)}%
-                    </Text>
-                    <Text style={{ color: colors.subtitle, fontSize: 12, lineHeight: 18 }}>
-                      • Top Category: {titleCase(mlInsights.spending_profile.metrics.top_category)} ({mlInsights.spending_profile.metrics.top_category_percentage}%)
-                    </Text>
-                    <Text style={{ color: colors.subtitle, fontSize: 12, lineHeight: 18 }}>
-                      • Avg Daily Spend: {currency(mlInsights.spending_profile.metrics.avg_daily_spend)}
-                    </Text>
-                  </View>
-                )}
               </View>
 
-              {/* AI Recommendations */}
-              {mlInsights.recommendations.length > 0 && (
-                <View style={styles.card}>
-                  <Text style={styles.sectionTitle}>AI Recommendations</Text>
-                  {mlInsights.recommendations.map((rec, index) => (
-                    <View 
-                      key={index}
-                      style={[
-                        styles.recommendationCard,
-                        { borderLeftColor: getPriorityColor(rec.priority, colors) }
-                      ]}
-                    >
-                      <View style={[
-                        styles.priorityBadge,
-                        { backgroundColor: getPriorityColor(rec.priority, colors) }
-                      ]}>
-                        <Text style={styles.priorityText}>
-                          {titleCase(rec.priority)} Priority • {titleCase(rec.category)}
-                        </Text>
-                      </View>
-                      <Text style={[styles.recommendationTitle, { color: colors.text }]}>
-                        {rec.title}
-                      </Text>
-                      <Text style={styles.recommendationDesc}>
-                        {rec.description}
-                      </Text>
-                      <Text style={styles.recommendationAction}>
-                        {rec.action}
-                      </Text>
-                      <Text style={[styles.recommendationDesc, { marginTop: 4 }]}>
-                        Impact: {rec.impact}
-                      </Text>
+              <View style={styles.confidenceBadge}>
+                <Text style={styles.confidenceText}>
+                  {Math.round(mlInsights.spending_profile.confidence * 100)}% Confidence in Analysis
+                </Text>
+              </View>
+
+              <Text style={{ color: colors.text, lineHeight: 22, marginBottom: 16 }}>
+                {profileInfo.description}
+              </Text>
+
+              {/* Key Metrics */}
+              {mlInsights.spending_profile.metrics && (
+                <View style={styles.metricGrid}>
+                  <View style={styles.metricItem}>
+                    <Text style={styles.metricValue}>
+                      {mlInsights.spending_profile.metrics.savings_rate.toFixed(1)}%
+                    </Text>
+                    <Text style={styles.metricLabel}>SAVINGS RATE</Text>
+                  </View>
+                  <View style={styles.metricItem}>
+                    <Text style={styles.metricValue}>
+                      {currency(mlInsights.spending_profile.metrics.avg_daily_spend)}
+                    </Text>
+                    <Text style={styles.metricLabel}>DAILY SPEND</Text>
+                  </View>
+                  <View style={styles.metricItem}>
+                    <Text style={styles.metricValue}>
+                      {titleCase(mlInsights.spending_profile.metrics.top_category)}
+                    </Text>
+                    <Text style={styles.metricLabel}>TOP CATEGORY</Text>
+                  </View>
+                  <View style={styles.metricItem}>
+                    <Text style={styles.metricValue}>
+                      {mlInsights.spending_profile.metrics.top_category_percentage.toFixed(0)}%
+                    </Text>
+                    <Text style={styles.metricLabel}>OF SPENDING</Text>
+                  </View>
+                </View>
+              )}
+
+              {/* Strengths & Improvements */}
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 16 }}>
+                <View style={{ flex: 1, marginRight: 8 }}>
+                  <Text style={[styles.label, { color: '#16a34a' }]}>Strengths</Text>
+                  {mlInsights.spending_profile.strengths.map((strength, index) => (
+                    <View key={index} style={styles.strengthItem}>
+                      <View style={styles.strengthDot} />
+                      <Text style={{ color: colors.text, fontSize: 12 }}>{strength}</Text>
                     </View>
                   ))}
                 </View>
-              )}
-
-              {/* Risk Assessment */}
-              {mlInsights.risk_assessment && (
-                <View style={[
-                  styles.card, 
-                  { 
-                    borderLeftWidth: 4,
-                    borderLeftColor: mlInsights.risk_assessment.level === 'high' ? '#dc2626' :
-                                   mlInsights.risk_assessment.level === 'medium' ? '#f59e0b' : '#16a34a'
-                  }
-                ]}>
-                  <Text style={styles.sectionTitle}>Risk Assessment</Text>
-                  <Text style={[styles.val, { 
-                    color: mlInsights.risk_assessment.level === 'high' ? '#dc2626' :
-                          mlInsights.risk_assessment.level === 'medium' ? '#f59e0b' : '#16a34a'
-                  }]}>
-                    {titleCase(mlInsights.risk_assessment.level)} Risk
-                  </Text>
-                  <Text style={{ color: colors.subtitle, marginTop: 4 }}>
-                    {mlInsights.risk_assessment.summary}
-                  </Text>
-                  {mlInsights.risk_assessment.factors.length > 0 && (
-                    <View style={{ marginTop: 8 }}>
-                      <Text style={[styles.label, { marginBottom: 4 }]}>Risk Factors:</Text>
-                      {mlInsights.risk_assessment.factors.map((factor: string, idx: number) => (
-                        <Text key={idx} style={{ color: colors.subtitle, fontSize: 12 }}>
-                          • {factor.replace(/_/g, ' ')}
-                        </Text>
-                      ))}
+                <View style={{ flex: 1, marginLeft: 8 }}>
+                  <Text style={[styles.label, { color: '#dc2626' }]}>Areas to Improve</Text>
+                  {mlInsights.spending_profile.areas_for_improvement.map((area, index) => (
+                    <View key={index} style={styles.strengthItem}>
+                      <View style={styles.improvementDot} />
+                      <Text style={{ color: colors.text, fontSize: 12 }}>{area}</Text>
                     </View>
-                  )}
+                  ))}
                 </View>
-              )}
-            </>
+              </View>
+            </View>
           )}
 
-          {/* Spending Analysis */}
+          {/* ML Recommendations */}
+          {mlInsights && mlInsights.recommendations && mlInsights.recommendations.length > 0 && (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Recommended Actions</Text>
+              {mlInsights.recommendations.map((recommendation, index) => (
+                <View 
+                  key={index}
+                  style={[
+                    styles.recommendationItem,
+                    { borderLeftColor: getPriorityColor(recommendation.priority) }
+                  ]}
+                >
+                  <Text style={styles.recommendationTitle}>
+                    {recommendation.title}
+                  </Text>
+                  <Text style={styles.recommendationDescription}>
+                    {recommendation.description}
+                  </Text>
+                  {recommendation.action && (
+                    <Text style={[styles.recommendationDescription, { marginTop: 4, fontWeight: '600' }]}>
+                      Action: {recommendation.action}
+                    </Text>
+                  )}
+                  {recommendation.impact && (
+                    <Text style={[styles.recommendationDescription, { marginTop: 2 }]}>
+                      Impact: {recommendation.impact}
+                    </Text>
+                  )}
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* Spending Breakdown */}
           <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Spending Analysis</Text>
+            <Text style={styles.sectionTitle}>Spending Breakdown</Text>
             {Object.keys(spentByCat).length === 0 ? (
-              <Text style={styles.muted}>No spending recorded yet.</Text>
+              <Text style={styles.muted}>No spending recorded this month</Text>
             ) : (
               Object.entries(spentByCat)
                 .sort((a, b) => b[1] - a[1])
-                .slice(0, 5)
+                .slice(0, 6)
                 .map(([cat, amt]) => (
                   <View key={cat} style={styles.categoryRow}>
-                    <View>
-                      <Text style={styles.categoryName}>{titleCase(cat)}</Text>
+                    <Text style={styles.categoryName}>{titleCase(cat)}</Text>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      <Text style={styles.categoryAmount}>{currency(amt)}</Text>
                       <Text style={styles.categoryPercentage}>
-                        {income > 0 ? `${((amt / income) * 100).toFixed(1)}% of income` : ""}
+                        {income > 0 ? `${((amt / income) * 100).toFixed(1)}% of income` : "100% of spending"}
                       </Text>
                     </View>
-                    <Text style={styles.categoryAmount}>{currency(amt)}</Text>
                   </View>
                 ))
             )}
           </View>
 
-          {/* Temporary debug button */}
-          <TouchableOpacity 
-            style={[styles.exportBtn, { backgroundColor: '#6b7280' }]}
-            onPress={async () => {
-              await clearAuthSession();
-              Alert.alert('Session Cleared', 'Please log in again to refresh your session.');
-            }}
-          >
-            <Text style={styles.exportText}>Clear Session & Relogin</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.exportBtn} 
-            onPress={() => Alert.alert("Export PDF", "PDF export feature coming soon!")}
-          >
-            <Text style={styles.exportText}>
-              {Platform.OS === "web" ? "Download ML Insights Report" : "Export ML Insights"}
-            </Text>
-          </TouchableOpacity>
+          {/* Fallback Action Steps if no ML recommendations */}
+          {mlInsights && (!mlInsights.recommendations || mlInsights.recommendations.length === 0) && (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Suggested Actions</Text>
+              {mlInsights.spending_profile.type === 'overspender' && (
+                <>
+                  <Text style={[styles.label, { color: '#dc2626', marginBottom: 8 }]}>Immediate Priority</Text>
+                  <Text style={{ color: colors.text, marginBottom: 12, lineHeight: 20 }}>
+                    • Create a strict budget focusing only on essential expenses
+                    {"\n"}• Identify and eliminate discretionary spending
+                    {"\n"}• Consider additional income sources
+                  </Text>
+                </>
+              )}
+              {mlInsights.spending_profile.type === 'moderate_spender' && (
+                <>
+                  <Text style={[styles.label, { color: '#f59e0b', marginBottom: 8 }]}>Improvement Areas</Text>
+                  <Text style={{ color: colors.text, marginBottom: 12, lineHeight: 20 }}>
+                    • Automate 10-15% of income to savings
+                    {"\n"}• Review recurring subscriptions
+                    {"\n"}• Set specific savings goals
+                  </Text>
+                </>
+              )}
+              {mlInsights.spending_profile.type === 'high_saver' && (
+                <>
+                  <Text style={[styles.label, { color: '#16a34a', marginBottom: 8 }]}>Next Level</Text>
+                  <Text style={{ color: colors.text, marginBottom: 12, lineHeight: 20 }}>
+                    • Explore investment opportunities
+                    {"\n"}• Consider high-yield savings accounts
+                    {"\n"}• Plan for long-term financial goals
+                  </Text>
+                </>
+              )}
+              <Text style={[styles.muted, { fontSize: 12, marginTop: 8 }]}>
+                Based on analysis of {Object.values(spentByCat).reduce((a, b) => a + b, 0) > 0 ? 
+                `${Object.keys(spentByCat).length} spending categories` : 'your transaction patterns'}
+              </Text>
+            </View>
+          )}
         </>
       )}
     </ScrollView>

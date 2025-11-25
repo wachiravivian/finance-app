@@ -1,69 +1,119 @@
 // supabase/functions/admin-list-users/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { adminClient, assertAdmin, corsHeaders, ok, err } from "../_shared_admin.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+};
 
 serve(async (req) => {
-  // ✅ Handle preflight CORS
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders, status: 200 });
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const check = await assertAdmin(req);
-    if (!check.ok) return err(check.error, 401);
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: "Missing authorization header" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-    const supa = adminClient();
-    let body = {};
-    try {
-      if (req.method === "POST") body = await req.json();
-    } catch (_) {}
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    
+    const adminClient = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
 
-    const limit = Math.min(Math.max(Number((body as any)?.limit) || 100, 1), 500);
-    const page = Math.max(Number((body as any)?.page) || 1, 1);
+    // Verify the requesting user is an admin
+    const token = authHeader.replace("Bearer ", "");
+    const { data: { user }, error: userError } = await adminClient.auth.getUser(token);
+    
+    if (userError || !user) {
+      return new Response(JSON.stringify({ error: "Invalid token" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-    console.log(`[Admin] Listing users (page=${page}, limit=${limit})`);
-
-    const { data: authUsers, error: auErr } = await supa.auth.admin.listUsers({ page, perPage: limit });
-    if (auErr) return err(auErr.message || "Failed to list users", 500);
-
-    const ids = (authUsers?.users ?? []).map((u) => u.id);
-    if (ids.length === 0) return ok({ rows: [], count: 0, status: "ok" });
-
-    const { data: profiles, error: pErr } = await supa
+    // Check if user is admin in profiles table
+    const { data: profile, error: profileError } = await adminClient
       .from("profiles")
-      .select("id, display_name, phone, role, created_at, last_seen_at")
-      .in("id", ids);
+      .select("role")
+      .eq("id", user.id)
+      .single();
 
-    if (pErr) console.warn("Profiles fetch error:", pErr);
+    if (profileError || !profile || profile.role !== "admin") {
+      return new Response(JSON.stringify({ error: "Insufficient permissions" }), {
+        status: 403,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-    const profById = new Map((profiles ?? []).map((p: any) => [p.id, p]));
+    // Get users with pagination
+    const { searchParams } = new URL(req.url);
+    const page = parseInt(searchParams.get("page") || "1");
+    const perPage = parseInt(searchParams.get("per_page") || "100");
+    
+    // Get auth users
+    const { data: { users: authUsers }, error: authError } = 
+      await adminClient.auth.admin.listUsers({
+        page: page,
+        perPage: perPage,
+      });
 
-    const rows = (authUsers?.users ?? []).map((u: any) => {
-      const profile = profById.get(u.id);
-      const displayName =
-        u.user_metadata?.full_name ||
-        u.user_metadata?.name ||
-        u.user_metadata?.display_name ||
-        profile?.display_name ||
-        u.email?.split("@")[0] ||
-        "Unnamed User";
+    if (authError) {
+      throw authError;
+    }
 
+    // Get profiles
+    const { data: profiles, error: profilesError } = await adminClient
+      .from("profiles")
+      .select("*")
+      .in("id", authUsers.map(u => u.id));
+
+    // Combine data
+    const usersWithProfiles = authUsers.map(authUser => {
+      const profile = profiles?.find(p => p.id === authUser.id);
       return {
-        id: u.id,
-        email: u.email ?? null,
-        display_name: displayName,
-        phone: profile?.phone ?? u.phone ?? null,
-        role: profile?.role ?? "user",
-        created_at: profile?.created_at ?? u.created_at ?? null,
-        last_sign_in_at: u.last_sign_in_at ?? null,
-        banned_until: u.banned_until ?? null,
+        id: authUser.id,
+        email: authUser.email,
+        display_name: profile?.display_name || authUser.user_metadata?.display_name || null,
+        phone: profile?.phone || null,
+        role: profile?.role || 'user',
+        created_at: authUser.created_at,
+        last_sign_in_at: authUser.last_sign_in_at,
+        banned_until: authUser.banned_until,
+        disabled: profile?.disabled || false,
       };
     });
 
-    console.log(`[Admin] Returned ${rows.length} users successfully`);
-    return ok({ rows, count: rows.length, status: "ok" });
+    return new Response(
+      JSON.stringify({ 
+        rows: usersWithProfiles,
+        total: authUsers.length,
+        page,
+        perPage 
+      }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+
   } catch (error) {
-    console.error("Unexpected error in admin-list-users:", error);
-    return err("Internal server error", 500);
+    console.error("Error in admin-list-users:", error);
+    return new Response(
+      JSON.stringify({ error: error.message || "Internal server error" }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   }
 });

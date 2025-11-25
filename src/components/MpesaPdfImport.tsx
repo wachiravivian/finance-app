@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
 import { supabase } from "../supabaseClient";
-import { getApiBase, checkBackendHealth } from "../utils/api";
+import { getApiBase, checkBackendHealth, testPdfPassword } from "../utils/api";
 
 export default function MpesaPdfImport({ onImported }: { onImported?: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -20,19 +20,17 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [selectedFile, setSelectedFile] = useState<any>(null);
   const [password, setPassword] = useState("");
+  const [testingPassword, setTestingPassword] = useState(false);
 
   const pickAndUpload = async () => {
     try {
       setBusy(true);
-      setProgress("Checking backend connection...");
+      setProgress("Checking connection...");
 
-      // First check if backend is reachable
+      // Check backend
       const isBackendOnline = await checkBackendHealth();
       if (!isBackendOnline) {
-        Alert.alert(
-          "Backend Offline", 
-          `Cannot connect to server at ${getApiBase()}. Please make sure the backend is running.`
-        );
+        Alert.alert("Backend Offline", "Please make sure the backend server is running.");
         return;
       }
 
@@ -49,19 +47,21 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
       }
 
       const asset = picked.assets[0];
+      console.log("📄 Selected file:", asset.name, "Size:", asset.size);
       setSelectedFile(asset);
       
       // First try without password
       await uploadPdf(asset, null);
       
     } catch (err: any) {
-      console.error("Import failed", err);
+      console.error("Import error:", err);
       
-      // Check if it's a password error
-      if (err.message.includes("password protected") || err.message.includes("encrypted") || err.message.includes("password")) {
+      // Check for password error
+      if (err.message.includes("password") || err.message.includes("protected") || err.message.includes("ID number")) {
+        console.log("🔒 PDF is password protected");
         setShowPasswordModal(true);
       } else {
-        handleError(err);
+        Alert.alert("Import Error", err.message || "Failed to import PDF. Please try again.");
       }
     } finally {
       if (!showPasswordModal) {
@@ -71,16 +71,47 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
     }
   };
 
+  const testPassword = async () => {
+    if (!selectedFile || !password.trim()) {
+      Alert.alert("Missing Info", "Please select a PDF file and enter a password.");
+      return;
+    }
+    
+    setTestingPassword(true);
+    
+    try {
+      console.log("🔐 Testing password...");
+      const result = await testPdfPassword(selectedFile, password);
+      console.log("Password test result:", result);
+
+      if (result.success) {
+        Alert.alert(
+          "✅ Password Works!", 
+          `${result.message}\n\nPages: ${result.pages}\nText found: ${result.sample_text_length} characters`
+        );
+      } else {
+        Alert.alert("❌ Password Failed", result.message);
+      }
+    } catch (err: any) {
+      Alert.alert("Test Error", err.message || "Failed to test password");
+    } finally {
+      setTestingPassword(false);
+    }
+  };
+
   const uploadPdf = async (asset: any, pdfPassword: string | null) => {
     try {
-      setProgress("Uploading and parsing PDF...");
+      setProgress(pdfPassword ? "Uploading with password..." : "Uploading PDF...");
+      console.log("📤 Uploading PDF...", { hasPassword: !!pdfPassword });
 
-      const form = new FormData();
+      const formData = new FormData();
+      
       if (Platform.OS === "web") {
-        const blob = await fetch(asset.uri).then((r) => r.blob());
-        form.append("file", new File([blob], "statement.pdf", { type: "application/pdf" }));
+        const response = await fetch(asset.uri);
+        const blob = await response.blob();
+        formData.append("file", blob, "statement.pdf");
       } else {
-        form.append("file", {
+        formData.append("file", {
           uri: asset.uri,
           name: "statement.pdf",
           type: "application/pdf",
@@ -88,117 +119,109 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
       }
       
       // Add password if provided
-      if (pdfPassword) {
-        form.append("password", pdfPassword);
+      if (pdfPassword && pdfPassword.trim()) {
+        formData.append("password", pdfPassword.trim());
+        console.log("🔑 Using password:", pdfPassword.trim());
       }
 
-      const API_URL = getApiBase().replace(/\/$/, "");
+      const API_URL = getApiBase();
       const endpoint = `${API_URL}/parse-mpesa`;
-
-      // Add timeout to fetch
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-      const res = await fetch(endpoint, { 
-        method: "POST", 
-        body: form,
-        signal: controller.signal 
-      });
       
-      clearTimeout(timeoutId);
+      console.log("🌐 Sending to:", endpoint);
+      
+      const response = await fetch(endpoint, { 
+        method: "POST", 
+        body: formData,
+      });
 
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`Server error: ${errorText}`);
+      const result = await response.json();
+      console.log("📨 Server response:", result);
+
+      if (!result.success) {
+        // Check if it's a password error
+        if (result.message.includes("password") || result.message.includes("ID number")) {
+          throw new Error("PASSWORD_REQUIRED: " + result.message);
+        }
+        throw new Error(result.message || "PDF parsing failed");
       }
 
-      const payload = await res.json();
-      const parsed = payload.transactions ?? [];
+      const transactions = result.transactions || [];
 
-      // Get user ID
+      if (transactions.length === 0) {
+        Alert.alert(
+          "No Transactions Found", 
+          "The PDF was processed but no transactions were found.\n\nPlease ensure:\n• It's a valid M-PESA statement\n• It contains transactions\n• Try a different password"
+        );
+        return;
+      }
+
+      // Get user
       const { data: auth } = await supabase.auth.getUser();
       const user_id = auth?.user?.id;
-      if (!user_id) throw new Error("Not signed in");
+      if (!user_id) throw new Error("Please sign in to import transactions");
 
-      // Map to DB shape
-      const rows = parsed.map((t: any) => {
-        const isCredit = t.direction === "credit";
-        const counterparty = t.counterparty || t.description || "Unknown Transaction";
-        
-        // Create title from counterparty (first 30 chars)
-        let title = counterparty;
-        if (title.length > 30) {
-          title = title.substring(0, 30) + "...";
-        }
+      setProgress(`Importing ${transactions.length} transactions...`);
 
-        return {
-          user_id,
-          ts: t.ts || new Date().toISOString(),
-          direction: isCredit ? "credit" : "debit",
-          amount: Math.abs(Number(t.amount ?? 0)),
-          method: t.method || "mpesa",
-          type: t.type || (isCredit ? "income" : "expense"),
-          counterparty: counterparty,
-          reference: t.reference || "",
-          category: t.category || "other",
-          notes: t.description || null,
-          title: title,
-        };
-      });
+      // Prepare data for database
+      const rows = transactions.map((t: any) => ({
+        user_id,
+        ts: t.ts || new Date().toISOString(),
+        direction: t.direction || "debit",
+        amount: Math.abs(Number(t.amount || 0)),
+        method: t.method || "mpesa",
+        type: t.type || "transfer",
+        counterparty: t.counterparty || "M-PESA Transaction",
+        reference: t.reference || "",
+        category: t.category || "other",
+        notes: t.description || null,
+        title: (t.counterparty || "M-PESA Transaction").substring(0, 30) + (t.counterparty && t.counterparty.length > 30 ? "..." : ""),
+      }));
 
-      setProgress(`Inserting ${rows.length} transactions...`);
+      // Insert into database
       const { error } = await supabase.from("transactions").insert(rows);
-      if (error) throw error;
+      if (error) {
+        console.error("❌ Database error:", error);
+        throw new Error(`Failed to save transactions: ${error.message}`);
+      }
 
-      Alert.alert("Success", `Imported ${rows.length} transactions.`);
+      console.log("✅ Successfully imported", transactions.length, "transactions");
+      Alert.alert("🎉 Success!", `Imported ${transactions.length} transactions from your M-PESA statement!`);
       onImported?.();
       setShowPasswordModal(false);
       setPassword("");
 
     } catch (err: any) {
+      console.error("💥 Upload error:", err);
       throw err;
-    }
-  };
-
-  const handleError = (err: any) => {
-    if (err.name === 'AbortError') {
-      Alert.alert("Timeout", "The request took too long. Please try again.");
-    } else {
-      let errorMessage = err.message;
-      
-      // Handle different error formats
-      if (errorMessage.includes('Server error: {')) {
-        try {
-          const jsonStr = errorMessage.replace('Server error: ', '');
-          const errorData = JSON.parse(jsonStr);
-          errorMessage = errorData.detail || errorData.message || 'Unknown server error';
-        } catch {
-          // If JSON parsing fails, use the original message
-        }
-      }
-      
-      Alert.alert(
-        "Import Error", 
-        errorMessage || "Failed to import PDF. Please check the file format and try again."
-      );
     }
   };
 
   const handlePasswordSubmit = async () => {
     if (!selectedFile) return;
     
+    if (!password.trim()) {
+      Alert.alert("Password Required", "Please enter your ID number (PDF password).");
+      return;
+    }
+    
     setBusy(true);
-    setProgress("Trying with password...");
+    setProgress("Importing with password...");
     
     try {
       await uploadPdf(selectedFile, password);
     } catch (err: any) {
-      handleError(err);
+      console.error("Password submit error:", err);
+      
+      // Handle password errors
+      if (err.message.includes("PASSWORD_REQUIRED")) {
+        const cleanMessage = err.message.replace("PASSWORD_REQUIRED: ", "");
+        Alert.alert("Password Error", cleanMessage);
+      } else {
+        Alert.alert("Import Error", err.message || "Failed to import with this password");
+      }
     } finally {
       setBusy(false);
       setProgress("");
-      setShowPasswordModal(false);
-      setPassword("");
     }
   };
 
@@ -216,11 +239,10 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
         onPress={pickAndUpload}
         disabled={busy}
         style={{
-          backgroundColor: busy ? "#94a3b8" : "#0ea5e9",
+          backgroundColor: busy ? "#ccc" : "#007AFF",
           padding: 12,
           borderRadius: 8,
           alignItems: "center",
-          minWidth: 150,
         }}
       >
         {busy ? (
@@ -233,18 +255,13 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
       </TouchableOpacity>
       
       {progress ? (
-        <Text style={{ fontSize: 12, color: "#64748b", textAlign: "center" }}>
+        <Text style={{ fontSize: 12, color: "#666", textAlign: "center" }}>
           {progress}
         </Text>
       ) : null}
 
       {/* Password Modal */}
-      <Modal
-        visible={showPasswordModal}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={handleCancelPassword}
-      >
+      <Modal visible={showPasswordModal} transparent animationType="slide">
         <View style={{
           flex: 1,
           justifyContent: 'center',
@@ -263,49 +280,75 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
               fontSize: 18,
               fontWeight: 'bold',
               marginBottom: 10,
-              color: '#0f172a',
             }}>
-              PDF Password Required
+              🔒 PDF Password Required
             </Text>
             
             <Text style={{
               fontSize: 14,
-              color: '#64748b',
+              color: '#666',
               marginBottom: 16,
+              lineHeight: 20,
             }}>
-              This PDF is password protected. M-PESA statements often use your ID number as the password.
+              Your M-PESA statement is password protected.{'\n\n'}
+              📋 Usually your ID number{'\n'}
+              🔢 Format: 12345678{'\n'}
+              📞 Sometimes: 0712345678 (phone number)
             </Text>
             
             <TextInput
               style={{
                 borderWidth: 1,
-                borderColor: '#e2e8f0',
+                borderColor: '#ddd',
                 borderRadius: 8,
                 padding: 12,
                 fontSize: 16,
-                marginBottom: 16,
+                marginBottom: 12,
+                backgroundColor: '#f9f9f9',
               }}
-              placeholder="Enter PDF password (e.g., ID number)"
+              placeholder="Enter your ID number (e.g., 12345678)"
               value={password}
               onChangeText={setPassword}
-              secureTextEntry={false}
+              keyboardType="numbers-and-punctuation"
+              autoCapitalize="none"
+              autoCorrect={false}
               autoFocus={true}
             />
+            
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
+              <TouchableOpacity
+                onPress={testPassword}
+                disabled={!password.trim() || testingPassword}
+                style={{
+                  flex: 1,
+                  backgroundColor: !password.trim() || testingPassword ? '#ccc' : '#34C759',
+                  padding: 8,
+                  borderRadius: 6,
+                  alignItems: 'center',
+                }}
+              >
+                {testingPassword ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={{ color: '#fff', fontWeight: '600', fontSize: 12 }}>
+                    🔐 Test Password
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
             
             <View style={{ flexDirection: 'row', gap: 12 }}>
               <TouchableOpacity
                 onPress={handleCancelPassword}
                 style={{
                   flex: 1,
-                  backgroundColor: '#f1f5f9',
+                  backgroundColor: '#f0f0f0',
                   padding: 12,
                   borderRadius: 8,
                   alignItems: 'center',
                 }}
               >
-                <Text style={{ color: '#64748b', fontWeight: '600' }}>
-                  Cancel
-                </Text>
+                <Text style={{ fontWeight: '600' }}>Cancel</Text>
               </TouchableOpacity>
               
               <TouchableOpacity
@@ -313,7 +356,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
                 disabled={!password.trim() || busy}
                 style={{
                   flex: 1,
-                  backgroundColor: !password.trim() || busy ? '#94a3b8' : '#0ea5e9',
+                  backgroundColor: !password.trim() || busy ? '#ccc' : '#007AFF',
                   padding: 12,
                   borderRadius: 8,
                   alignItems: 'center',
@@ -322,9 +365,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
                 {busy ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={{ color: '#fff', fontWeight: '600' }}>
-                    Submit
-                  </Text>
+                  <Text style={{ color: '#fff', fontWeight: '600' }}>Import</Text>
                 )}
               </TouchableOpacity>
             </View>
