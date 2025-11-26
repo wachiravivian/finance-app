@@ -1,4 +1,4 @@
-// src/screens/TransactionsScreen.tsx
+// src/screens/TransactionsScreen.tsx - FULLY UPDATED
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View,
@@ -14,7 +14,7 @@ import {
 } from "react-native";
 import { supabase } from "../supabaseClient";
 import MpesaPdfImport from "../components/MpesaPdfImport";
-import { checkBackendHealth, testBackendConnection, getBackendConfig } from "../utils/api";
+import { checkBackendHealthSimple, testBackendConnection, getBackendConfig } from "../utils/api";
 import { useTheme } from "../hooks/useTheme";
 
 type Tx = {
@@ -38,6 +38,7 @@ export default function TransactionsScreen() {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [connectionTesting, setConnectionTesting] = useState(false);
+  const [connectionDetails, setConnectionDetails] = useState<any>(null);
   const { colors } = useTheme();
 
   const loadTransactions = useCallback(async () => {
@@ -84,24 +85,25 @@ export default function TransactionsScreen() {
   const checkBackendConnection = async () => {
     console.log('🔄 Checking backend connection...');
     
-    const isOnline = await checkBackendHealth();
+    const isOnline = await checkBackendHealthSimple(); // ← USING SIMPLE HEALTH CHECK
     console.log(`📡 Backend status: ${isOnline ? 'Online' : 'Offline'}`);
     
     // For debugging - log the actual URL being used
     const config = getBackendConfig();
     console.log('🔧 Backend configuration:', config);
+    setConnectionDetails(config);
     
     setBackendOnline(isOnline);
     
     if (!isOnline) {
-      // Show more helpful error message - FIXED: use localPort instead of port
       Alert.alert(
         'Backend Offline', 
-        `Cannot connect to server at ${config.baseUrl}\n\nPlease ensure:
-• Backend is running on port ${config.localPort}
-• Python server is started
+        `Cannot connect to server at ${config.baseUrl}\n\nConnection Method: ${config.connectionMethod}\n\nPlease ensure:
+• Backend is running: python app.py
+• Port ${config.localPort} is accessible
+• Ngrok is running (if using): ngrok http 5000
 • Firewall allows connections
-• Correct IP address is set`,
+• Your phone and computer are on same WiFi`,
         [{ text: 'OK' }]
       );
     }
@@ -114,12 +116,13 @@ export default function TransactionsScreen() {
       console.log('🧪 Connection test result:', result);
       
       Alert.alert(
-        result.success ? 'Connection Successful' : 'Connection Failed',
+        result.success ? 'Connection Test Complete' : 'Connection Test Failed',
         result.message,
         [{ text: 'OK' }]
       );
       
       setBackendOnline(result.success);
+      setConnectionDetails(result.details);
     } catch (error: any) {
       console.error('💥 Connection test error:', error);
       Alert.alert('Test Error', error.message);
@@ -233,6 +236,23 @@ export default function TransactionsScreen() {
                 )}
               </TouchableOpacity>
             </View>
+            
+            {/* Debug Information */}
+            {connectionDetails && (
+              <View style={[styles.debugInfo, { backgroundColor: colors.border + '20' }]}>
+                <Text style={[styles.debugText, { color: colors.textSecondary }]}>
+                  URL: {connectionDetails.activeUrl || connectionDetails.baseUrl}
+                </Text>
+                <Text style={[styles.debugText, { color: colors.textSecondary }]}>
+                  Method: {connectionDetails.connectionMethod}
+                </Text>
+                {connectionDetails.usingNgrok && (
+                  <Text style={[styles.debugText, { color: colors.primary }]}>
+                    Using Ngrok Tunnel
+                  </Text>
+                )}
+              </View>
+            )}
           </View>
         </View>
 
@@ -514,6 +534,7 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 8,
     borderWidth: 1,
+    marginBottom: 8,
   },
   statusDot: {
     width: 8,
@@ -535,6 +556,15 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
+  },
+  debugInfo: {
+    padding: 8,
+    borderRadius: 6,
+  },
+  debugText: {
+    fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    marginBottom: 2,
   },
   clearSection: {
     padding: 16,

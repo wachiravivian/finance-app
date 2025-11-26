@@ -1,4 +1,4 @@
-# app.py - COMPLETE WORKING BACKEND
+# app.py - UPDATED WITH PASSWORD SUPPORT
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,12 +14,25 @@ import PyPDF2
 
 # App setup
 app = FastAPI(title="FinAccess API")
+
+# Enhanced CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8081",
+        "http://localhost:19006", 
+        "http://127.0.0.1:8081",
+        "http://127.0.0.1:19006",
+        "https://*.ngrok-free.app",
+        "http://*.ngrok-free.app",
+        "exp://*",  # Expo
+        "http://*",  # Allow all for testing (remove in production)
+        "https://*", # Allow all for testing (remove in production)
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"https?://.*\.ngrok-free\.app",
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -124,7 +137,7 @@ async def test_pdf_password(
             "message": f"Error testing password: {str(e)}"
         }
 
-# Main PDF parsing endpoint
+# Main PDF parsing endpoint - UPDATED WITH PASSWORD HANDLING
 @app.post("/parse-mpesa", response_model=PDFParseResponse)
 async def parse_mpesa_pdf(
     file: UploadFile = File(...),
@@ -174,7 +187,7 @@ async def parse_mpesa_pdf(
                 return PDFParseResponse(
                     success=False,
                     transactions=[],
-                    message="PDF is password protected. Please provide your ID number as password.",
+                    message="PDF is password protected. Please provide your password (831164).",
                     count=0
                 )
             else:
@@ -194,6 +207,8 @@ async def parse_mpesa_pdf(
                     all_text += text + "\n"
             
             pdf.close()
+            
+            log.info(f"📖 Extracted {len(all_text)} characters from PDF")
             
             if all_text.strip():
                 transactions = parse_mpesa_text(all_text)
@@ -221,7 +236,7 @@ async def parse_mpesa_pdf(
             return PDFParseResponse(
                 success=False,
                 transactions=[],
-                message="No transactions found in the PDF. Please ensure:\n• It's a valid M-PESA statement\n• It contains transactions\n• Try using your ID number as password",
+                message="No transactions found in the PDF. Please ensure:\n• It's a valid M-PESA statement\n• It contains transactions\n• You used the correct password: 831164",
                 count=0
             )
 
@@ -253,27 +268,36 @@ def parse_mpesa_text(text: str) -> List[Dict[str, Any]]:
         ]):
             continue
             
-        # Look for date pattern (dd/mm/yyyy or dd/mm/yy)
-        date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})', line)
+        # Look for M-PESA receipt pattern (starts with TK)
+        receipt_match = re.search(r'(TK[A-Z0-9]{8,11})', line)
+        if not receipt_match:
+            continue
+            
+        # Look for date pattern (dd/mm/yyyy or yyyy-mm-dd)
+        date_match = re.search(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', line) or re.search(r'(\d{1,2}/\d{1,2}/\d{2,4})', line)
         if not date_match:
             continue
             
-        # Look for amount (format: 1,234.56)
-        amount_matches = re.findall(r'(\d{1,3}(?:,\d{3})*\.\d{2})', line)
+        # Look for amount (format: 1,234.56 or 1234.56)
+        amount_matches = re.findall(r'(\d{1,3}(?:,\d{3})*\.\d{2})', line.replace(' ', ''))
         if not amount_matches:
             continue
             
         try:
+            receipt = receipt_match.group(1)
             date_str = date_match.group(1)
+            
             # Use the largest amount found (usually the transaction amount)
             amounts = [float(amt.replace(',', '')) for amt in amount_matches]
-            amount = max(amounts)
+            amount = max(amounts) if amounts else 0
             
             if amount <= 0 or amount > 1000000:  # Sanity check
                 continue
                 
-            # Extract description by removing date and amounts
+            # Extract description by removing receipt, date and amounts
             description = line
+            description = re.sub(r'TK[A-Z0-9]{8,11}', '', description)
+            description = re.sub(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', '', description)
             description = re.sub(r'\d{1,2}/\d{1,2}/\d{2,4}', '', description)
             for amt in amount_matches:
                 description = description.replace(amt, '')
@@ -285,47 +309,48 @@ def parse_mpesa_text(text: str) -> List[Dict[str, Any]]:
             # Determine transaction direction
             direction = "debit"  # Default to debit (money out)
             line_lower = line.lower()
-            if any(word in line_lower for word in ['received', 'from', 'deposit', 'paid in']):
+            if any(word in line_lower for word in ['received', 'from', 'deposit', 'paid in', 'reversal']):
                 direction = "credit"
-            elif any(word in line_lower for word in ['sent', 'to', 'withdraw', 'paid to', 'pay bill']):
+            elif any(word in line_lower for word in ['sent', 'to', 'withdraw', 'paid to', 'pay bill', 'merchant payment']):
                 direction = "debit"
                 
-            # Extract reference number
-            reference = ""
-            ref_match = re.search(r'[A-Z0-9]{8,12}', line)
-            if ref_match:
-                reference = ref_match.group(0)
+            # Parse date
+            try:
+                if '-' in date_str and ':' in date_str:  # 2025-11-14 13:05:05 format
+                    transaction_date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+                else:  # dd/mm/yyyy format
+                    parts = date_str.split('/')
+                    if len(parts) == 3:
+                        day, month, year = parts
+                        if len(year) == 2:
+                            year = f"20{year}"
+                        transaction_date = datetime(int(year), int(month), int(day))
+                    else:
+                        transaction_date = datetime.now()
+            except:
+                transaction_date = datetime.now()
                 
             # Categorize transaction
             category = categorize_transaction(description)
             
-            # Parse date
-            try:
-                parts = date_str.split('/')
-                if len(parts) == 3:
-                    day, month, year = parts
-                    if len(year) == 2:
-                        year = f"20{year}"
-                    transaction_date = datetime(int(year), int(month), int(day))
-                else:
-                    transaction_date = datetime.now()
-            except:
-                transaction_date = datetime.now()
-                
+            # USE ALLOWED TRANSACTION TYPES FOR YOUR DATABASE
+            # Common allowed types: 'expense', 'income', 'transfer'
+            transaction_type = "expense" if direction == "debit" else "income"
+            
             transaction = {
-                "ts": transaction_date.isoformat(),
-                "direction": direction,
-                "amount": amount,
-                "method": "mpesa",
-                "type": "transfer",
-                "counterparty": description,
-                "reference": reference,
-                "category": category,
-                "description": description
-            }
+    "ts": transaction_date.isoformat(),
+    "direction": direction,
+    "amount": amount,
+    "method": "mpesa",
+    "type": "expense" if direction == "debit" else "income",  # ← CHANGED
+    "counterparty": description,
+    "reference": receipt,
+    "category": category,
+    "description": description
+}
             
             transactions.append(transaction)
-            log.info(f"✅ Transaction: {description} - KES {amount} ({direction})")
+            log.info(f"✅ Transaction: {description[:30]}... - KES {amount} ({direction})")
             
         except Exception as e:
             log.warning(f"⚠️ Failed to parse line {i}: {e}")
@@ -349,10 +374,14 @@ def categorize_transaction(description: str) -> str:
         return "income"
     elif any(word in desc_lower for word in ['shop', 'market', 'store', 'clothing']):
         return "shopping"
+    elif any(word in desc_lower for word in ['pay bill', 'bill payment']):
+        return "bills"
+    elif any(word in desc_lower for word in ['merchant payment', 'buy goods']):
+        return "shopping"
     else:
         return "other"
 
-# ML Insights endpoint
+# ML Insights endpoint (unchanged)
 @app.post("/ml-insights", response_model=MLInsightsResponse)
 async def generate_ml_insights(payload: MLInsightsRequest):
     """Generate financial insights"""
@@ -532,58 +561,10 @@ async def generate_ml_insights(payload: MLInsightsRequest):
             risk_assessment={"level": "unknown", "factors": [], "summary": "Analysis failed"}
         )
 
-# Test endpoint
-@app.get("/test-ml")
-async def test_ml():
-    """Test ML endpoint"""
-    test_data = [
-        {
-            "ts": "2024-01-01T10:00:00",
-            "direction": "credit",
-            "amount": 50000.0,
-            "category": "salary",
-            "method": "mpesa"
-        },
-        {
-            "ts": "2024-01-02T14:30:00", 
-            "direction": "debit",
-            "amount": 1500.0,
-            "category": "food", 
-            "method": "mpesa"
-        }
-    ]
-    
-    try:
-        # Simulate ML processing
-        income = sum(t['amount'] for t in test_data if t['direction'] == 'credit')
-        expenses = sum(t['amount'] for t in test_data if t['direction'] == 'debit')
-        
-        return {
-            "success": True,
-            "message": "ML endpoint is working correctly",
-            "test_data": {
-                "income": income,
-                "expenses": expenses,
-                "transactions": len(test_data)
-            }
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "message": "ML endpoint has issues"
-        }
-
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting FinAccess API on port 8080...")
-    print("📍 Local: http://localhost:8080")
-    print("📍 Network: http://YOUR_IP:8080") 
-    print("✅ Health check: http://localhost:8080/health")
-    print("📄 PDF Import: POST http://localhost:8080/parse-mpesa")
-    print("🔐 Test Password: POST http://localhost:8080/test-pdf-password")
-    print("🔮 ML Insights: POST http://localhost:8080/ml-insights")
-    print("")
-    print("💡 Make sure to install required packages:")
-    print("   pip install pdfplumber PyPDF2")
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+    print("🚀 Starting FinAccess API on port 5000...")
+    print("📍 Local: http://localhost:5000")
+    print("✅ Health check: http://localhost:5000/health")
+    print("📄 PDF Import: POST http://localhost:5000/parse-mpesa")
+    uvicorn.run(app, host="0.0.0.0", port=5000, log_level="info")

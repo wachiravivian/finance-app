@@ -1,4 +1,4 @@
-// src/components/MpesaPdfImport.tsx
+// src/components/MpesaPdfImport.tsx - UPDATED WITH PASSWORD
 import React, { useState } from "react";
 import {
   View,
@@ -19,7 +19,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
   const [progress, setProgress] = useState("");
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [selectedFile, setSelectedFile] = useState<any>(null);
-  const [password, setPassword] = useState("");
+  const [password, setPassword] = useState("831164"); // ← DEFAULT PASSWORD SET HERE
   const [testingPassword, setTestingPassword] = useState(false);
 
   const pickAndUpload = async () => {
@@ -50,15 +50,15 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
       console.log("📄 Selected file:", asset.name, "Size:", asset.size);
       setSelectedFile(asset);
       
-      // First try without password
-      await uploadPdf(asset, null);
+      // AUTO-USE THE PASSWORD 831164
+      await uploadPdf(asset, "831164");
       
     } catch (err: any) {
       console.error("Import error:", err);
       
-      // Check for password error
-      if (err.message.includes("password") || err.message.includes("protected") || err.message.includes("ID number")) {
-        console.log("🔒 PDF is password protected");
+      // If password fails, show modal to try different one
+      if (err.message.includes("password") || err.message.includes("protected") || err.message.includes("Cannot read PDF")) {
+        console.log("🔒 PDF password may be incorrect");
         setShowPasswordModal(true);
       } else {
         Alert.alert("Import Error", err.message || "Failed to import PDF. Please try again.");
@@ -90,7 +90,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
           `${result.message}\n\nPages: ${result.pages}\nText found: ${result.sample_text_length} characters`
         );
       } else {
-        Alert.alert("❌ Password Failed", result.message);
+        Alert.alert("❌ Password Failed", result.message || "This password doesn't work. Try 831164.");
       }
     } catch (err: any) {
       Alert.alert("Test Error", err.message || "Failed to test password");
@@ -118,10 +118,14 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
         } as any);
       }
       
-      // Add password if provided
+      // ALWAYS ADD PASSWORD 831164
       if (pdfPassword && pdfPassword.trim()) {
         formData.append("password", pdfPassword.trim());
         console.log("🔑 Using password:", pdfPassword.trim());
+      } else {
+        // Fallback: always use 831164
+        formData.append("password", "831164");
+        console.log("🔑 Using default password: 831164");
       }
 
       const API_URL = getApiBase();
@@ -138,10 +142,6 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
       console.log("📨 Server response:", result);
 
       if (!result.success) {
-        // Check if it's a password error
-        if (result.message.includes("password") || result.message.includes("ID number")) {
-          throw new Error("PASSWORD_REQUIRED: " + result.message);
-        }
         throw new Error(result.message || "PDF parsing failed");
       }
 
@@ -150,7 +150,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
       if (transactions.length === 0) {
         Alert.alert(
           "No Transactions Found", 
-          "The PDF was processed but no transactions were found.\n\nPlease ensure:\n• It's a valid M-PESA statement\n• It contains transactions\n• Try a different password"
+          "The PDF was processed but no transactions were found.\n\nPlease ensure:\n• It's a valid M-PESA statement\n• It contains transactions\n• Password is correct: 831164"
         );
         return;
       }
@@ -188,7 +188,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
       Alert.alert("🎉 Success!", `Imported ${transactions.length} transactions from your M-PESA statement!`);
       onImported?.();
       setShowPasswordModal(false);
-      setPassword("");
+      setPassword("831164"); // Reset to default
 
     } catch (err: any) {
       console.error("💥 Upload error:", err);
@@ -199,11 +199,6 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
   const handlePasswordSubmit = async () => {
     if (!selectedFile) return;
     
-    if (!password.trim()) {
-      Alert.alert("Password Required", "Please enter your ID number (PDF password).");
-      return;
-    }
-    
     setBusy(true);
     setProgress("Importing with password...");
     
@@ -211,14 +206,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
       await uploadPdf(selectedFile, password);
     } catch (err: any) {
       console.error("Password submit error:", err);
-      
-      // Handle password errors
-      if (err.message.includes("PASSWORD_REQUIRED")) {
-        const cleanMessage = err.message.replace("PASSWORD_REQUIRED: ", "");
-        Alert.alert("Password Error", cleanMessage);
-      } else {
-        Alert.alert("Import Error", err.message || "Failed to import with this password");
-      }
+      Alert.alert("Import Error", err.message || "Failed to import with this password. Try 831164.");
     } finally {
       setBusy(false);
       setProgress("");
@@ -227,7 +215,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
 
   const handleCancelPassword = () => {
     setShowPasswordModal(false);
-    setPassword("");
+    setPassword("831164"); // Reset to default
     setBusy(false);
     setProgress("");
   };
@@ -249,7 +237,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
           <ActivityIndicator color="#fff" />
         ) : (
           <Text style={{ color: "#fff", fontWeight: "600" }}>
-            📄 Import M-PESA PDF
+            📄 Import M-PESA PDF (Auto: 831164)
           </Text>
         )}
       </TouchableOpacity>
@@ -290,10 +278,8 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
               marginBottom: 16,
               lineHeight: 20,
             }}>
-              Your M-PESA statement is password protected.{'\n\n'}
-              📋 Usually your ID number{'\n'}
-              🔢 Format: 12345678{'\n'}
-              📞 Sometimes: 0712345678 (phone number)
+              Default password: 831164{'\n'}
+              If this doesn't work, try a different password.
             </Text>
             
             <TextInput
@@ -306,7 +292,7 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
                 marginBottom: 12,
                 backgroundColor: '#f9f9f9',
               }}
-              placeholder="Enter your ID number (e.g., 12345678)"
+              placeholder="Enter PDF password (default: 831164)"
               value={password}
               onChangeText={setPassword}
               keyboardType="numbers-and-punctuation"
@@ -353,10 +339,10 @@ export default function MpesaPdfImport({ onImported }: { onImported?: () => void
               
               <TouchableOpacity
                 onPress={handlePasswordSubmit}
-                disabled={!password.trim() || busy}
+                disabled={busy}
                 style={{
                   flex: 1,
-                  backgroundColor: !password.trim() || busy ? '#ccc' : '#007AFF',
+                  backgroundColor: busy ? '#ccc' : '#007AFF',
                   padding: 12,
                   borderRadius: 8,
                   alignItems: 'center',

@@ -1,4 +1,4 @@
-// screens/InsightsScreen.tsx - FIXED VERSION
+// src/screens/InsightsScreen.tsx - FULLY UPDATED WITH BETTER ERROR HANDLING
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View,
@@ -11,9 +11,9 @@ import {
   Alert,
   Platform,
 } from "react-native";
-import { supabase, getCurrentUser } from "../supabaseClient";
+import { supabase } from "../supabaseClient";
 import { useTheme } from "../hooks/useTheme";
-import { getApiBase } from "../utils/api";
+import { getApiBase, testBackendConnection } from "../utils/api";
 
 type TxRow = {
   amount: number;
@@ -25,7 +25,7 @@ type TxRow = {
 };
 
 type SpendingProfile = {
-  type: "high_saver" | "moderate_spender" | "overspender" | "balanced" | "insufficient_data";
+  type: "high_saver" | "moderate_spender" | "overspender" | "balanced" | "insufficient_data" | "error";
   confidence: number;
   description: string;
   strengths: string[];
@@ -76,6 +76,7 @@ function getProfileColor(profileType: string) {
     case "balanced": return "#3b82f6";
     case "moderate_spender": return "#f59e0b";
     case "overspender": return "#dc2626";
+    case "error": return "#6b7280";
     default: return "#6b7280";
   }
 }
@@ -106,6 +107,11 @@ function getProfileDescription(profileType: string, savingsRate: number) {
       title: "Insufficient Data",
       subtitle: "Need more transaction history",
       description: "We need more transaction data to analyze your spending behavior accurately."
+    },
+    error: {
+      title: "Analysis Unavailable",
+      subtitle: "Technical issue detected",
+      description: "We're having trouble analyzing your data. Please check your connection and try again."
     }
   };
   
@@ -122,14 +128,18 @@ export default function InsightsScreen() {
   const [mlInsights, setMlInsights] = useState<MLInsights | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [backendUrl, setBackendUrl] = useState<string>('');
+  const [retryCount, setRetryCount] = useState(0);
+  const [lastError, setLastError] = useState<string>('');
 
   const loadTransactions = useCallback(async () => {
     setLoading(true);
     setConnectionError(null);
     
     try {
-      const user = await getCurrentUser();
-      if (!user) {
+      const { data: u } = await supabase.auth.getUser();
+      const userId = u?.user?.id;
+
+      if (!userId) {
         setConnectionError('Please log in to view transactions');
         return;
       }
@@ -139,7 +149,7 @@ export default function InsightsScreen() {
       const { data: txData, error: txError } = await supabase
         .from("transactions")
         .select("amount, direction, category, occurred_at, method, counterparty")
-        .eq("user_id", user.id)
+        .eq("user_id", userId)
         .gte("occurred_at", start)
         .lt("occurred_at", end);
 
@@ -172,7 +182,7 @@ export default function InsightsScreen() {
       setSpentByCat(catMap);
 
       if (txs.length > 0) {
-        await generateMLInsights(txs, user.id);
+        await generateMLInsights(txs, userId);
       } else {
         setMlInsights(null);
       }
@@ -187,6 +197,7 @@ export default function InsightsScreen() {
   const generateMLInsights = async (transactions: TxRow[], userId: string) => {
     setGeneratingInsights(true);
     setConnectionError(null);
+    setLastError('');
     
     try {
       const mlTransactions = transactions.map(tx => ({
@@ -199,12 +210,13 @@ export default function InsightsScreen() {
       }));
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const timeoutId = setTimeout(() => controller.abort(), 20000); // Increased timeout
 
       const currentBackendUrl = getApiBase();
       setBackendUrl(currentBackendUrl);
       
-      console.log('Calling ML insights at:', `${currentBackendUrl}/ml-insights`);
+      console.log('🔄 Calling ML insights at:', `${currentBackendUrl}/ml-insights`);
+      console.log('📊 Sending transactions:', mlTransactions.length);
 
       const response = await fetch(`${currentBackendUrl}/ml-insights`, {
         method: 'POST',
@@ -221,54 +233,175 @@ export default function InsightsScreen() {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        throw new Error(`ML server error: ${response.status} - ${response.statusText}`);
+        let errorMessage = `ML server error: ${response.status} - ${response.statusText}`;
+        
+        if (response.status === 404) {
+          errorMessage = `ML insights endpoint not found (404). Please ensure:\n\n• Your Python backend has the /ml-insights route\n• Backend is running: python app.py\n• Backend was restarted after adding the route`;
+        } else if (response.status === 500) {
+          errorMessage = `ML server internal error (500). Check your Python backend logs for details.`;
+        } else if (response.status === 422) {
+          errorMessage = `Data validation error (422). Check transaction format.`;
+        }
+        
+        throw new Error(errorMessage);
       }
 
       const insights = await response.json();
-      console.log('ML insights received successfully');
+      console.log('✅ ML insights received successfully:', insights);
+      
+      if (!insights.spending_profile) {
+        throw new Error('Invalid response format from ML server');
+      }
+      
       setMlInsights(insights);
+      setRetryCount(0); // Reset retry count on success
       
     } catch (error: any) {
-      console.error('ML insights failed:', error);
+      console.error('❌ ML insights failed:', error);
       
       const errorMessage = error.name === 'AbortError' 
-        ? 'Request timeout - backend took too long to respond'
+        ? 'Request timeout - backend took too long to respond. Please check if your Python backend is running.'
         : error.message;
       
+      setLastError(errorMessage);
       setConnectionError(`ML Analysis Failed: ${errorMessage}`);
+      setRetryCount(prev => prev + 1);
       
       // Smart fallback based on user's actual data
-      const currentSavingsRate = calculateSavingsRate(income, expenses);
-      let profileType: SpendingProfile['type'] = "insufficient_data";
-      
-      if (income > 0) {
-        if (currentSavingsRate >= 20) profileType = "high_saver";
-        else if (currentSavingsRate >= 0) profileType = "moderate_spender";
-        else profileType = "overspender";
-      }
-
-      setMlInsights({
-        spending_profile: {
-          type: profileType,
-          confidence: 0.7,
-          description: getProfileDescription(profileType, currentSavingsRate).description,
-          strengths: ["Transaction tracking active"],
-          areas_for_improvement: ["Continue monitoring spending"],
-          metrics: {
-            savings_rate: currentSavingsRate,
-            total_income: income,
-            total_expenses: expenses,
-            avg_daily_spend: expenses > 0 ? expenses / 30 : 0,
-            top_category: Object.keys(spentByCat)[0] || "none",
-            top_category_percentage: 0
-          }
-        },
-        recommendations: [],
-        trends: {},
-        risk_assessment: {}
-      });
+      createFallbackInsights();
     } finally {
       setGeneratingInsights(false);
+    }
+  };
+
+  const createFallbackInsights = () => {
+    const currentSavingsRate = calculateSavingsRate(income, expenses);
+    let profileType: SpendingProfile['type'] = "insufficient_data";
+    
+    if (income > 0 && expenses > 0) {
+      if (currentSavingsRate >= 20) profileType = "high_saver";
+      else if (currentSavingsRate >= 0) profileType = "moderate_spender";
+      else profileType = "overspender";
+    }
+
+    const topCategory = Object.keys(spentByCat).length > 0 
+      ? Object.entries(spentByCat).sort((a, b) => b[1] - a[1])[0][0]
+      : "none";
+    
+    const topCategoryPercentage = topCategory !== "none" && expenses > 0 
+      ? (spentByCat[topCategory] / expenses * 100)
+      : 0;
+
+    const fallbackInsights: MLInsights = {
+      spending_profile: {
+        type: profileType,
+        confidence: 0.6, // Lower confidence for fallback
+        description: getProfileDescription(profileType, currentSavingsRate).description,
+        strengths: profileType === "insufficient_data" 
+          ? ["Ready to start tracking"] 
+          : ["Basic analysis available", "Transaction data loaded"],
+        areas_for_improvement: profileType === "insufficient_data"
+          ? ["Import M-PESA statements", "Add more transactions"]
+          : ["Enable ML insights for deeper analysis", "Check backend connection"],
+        metrics: {
+          savings_rate: currentSavingsRate,
+          total_income: income,
+          total_expenses: expenses,
+          avg_daily_spend: expenses > 0 ? expenses / 30 : 0,
+          top_category: topCategory,
+          top_category_percentage: topCategoryPercentage
+        }
+      },
+      recommendations: getFallbackRecommendations(profileType, currentSavingsRate),
+      trends: {
+        income_trend: "unknown",
+        spending_trend: "unknown",
+        volatility: "unknown",
+        key_observations: ["Using fallback analysis due to ML service unavailability"]
+      },
+      risk_assessment: {
+        level: currentSavingsRate >= 0 ? "low" : "medium",
+        factors: currentSavingsRate < 0 ? ["overspending"] : ["basic_tracking"],
+        summary: currentSavingsRate >= 0 ? "Basic tracking shows reasonable finances" : "Spending exceeds income"
+      }
+    };
+
+    setMlInsights(fallbackInsights);
+  };
+
+  const getFallbackRecommendations = (profileType: string, savingsRate: number) => {
+    const baseRecommendations = [{
+      category: "technical",
+      priority: "high",
+      title: "Fix ML Insights Connection",
+      description: "Advanced analysis is currently unavailable",
+      action: "Check if Python backend is running with /ml-insights endpoint",
+      impact: "High - Enable smart financial insights"
+    }];
+
+    if (profileType === "overspender") {
+      baseRecommendations.push({
+        category: "spending",
+        priority: "high",
+        title: "Reduce Discretionary Spending",
+        description: "Your spending exceeds your income",
+        action: "Identify and cut 2-3 non-essential expenses this month",
+        impact: "High - Immediate financial improvement"
+      });
+    } else if (profileType === "moderate_spender") {
+      baseRecommendations.push({
+        category: "savings", 
+        priority: "medium",
+        title: "Increase Savings Rate",
+        description: "You have room to save more",
+        action: "Set up automatic transfer of 10% to savings",
+        impact: "Medium - Build financial security"
+      });
+    }
+
+    return baseRecommendations;
+  };
+
+  const retryMLAnalysis = async () => {
+    const { data: u } = await supabase.auth.getUser();
+    const userId = u?.user?.id;
+    
+    if (!userId) {
+      Alert.alert("Error", "Please log in to retry analysis");
+      return;
+    }
+
+    const { start, end } = getMonthRange();
+    const { data: txData } = await supabase
+      .from("transactions")
+      .select("amount, direction, category, occurred_at, method, counterparty")
+      .eq("user_id", userId)
+      .gte("occurred_at", start)
+      .lt("occurred_at", end);
+
+    if (txData && txData.length > 0) {
+      const txs: TxRow[] = txData.map((t: any) => ({
+        amount: Number(t.amount ?? 0),
+        direction: t.direction,
+        category: t.category ?? "uncategorized",
+        occurred_at: t.occurred_at,
+        method: t.method,
+        counterparty: t.counterparty,
+      }));
+
+      await generateMLInsights(txs, userId);
+    }
+  };
+
+  const testBackend = async () => {
+    try {
+      const result = await testBackendConnection();
+      Alert.alert(
+        result.success ? 'Backend Test Complete' : 'Backend Test Failed',
+        result.message
+      );
+    } catch (error: any) {
+      Alert.alert('Test Error', error.message);
     }
   };
 
@@ -405,6 +538,49 @@ export default function InsightsScreen() {
       color: colors.subtitle,
       lineHeight: 16,
     },
+    errorCard: {
+      backgroundColor: '#fef2f2',
+      borderColor: '#fecaca',
+      borderWidth: 1,
+      padding: 16,
+      borderRadius: 12,
+      marginBottom: 16,
+    },
+    actionButtons: {
+      flexDirection: 'row',
+      gap: 12,
+      marginTop: 12,
+    },
+    actionButton: {
+      flex: 1,
+      padding: 12,
+      borderRadius: 8,
+      alignItems: 'center',
+    },
+    retryButton: {
+      backgroundColor: colors.primary,
+    },
+    testButton: {
+      backgroundColor: colors.secondary || '#6b7280',
+    },
+    actionButtonText: {
+      color: '#fff',
+      fontWeight: '600',
+      fontSize: 14,
+    },
+    fallbackBadge: {
+      backgroundColor: '#f59e0b',
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 12,
+      alignSelf: 'flex-start',
+      marginBottom: 8,
+    },
+    fallbackText: {
+      color: '#fff',
+      fontSize: 10,
+      fontWeight: '700',
+    },
   });
 
   const profileInfo = mlInsights ? getProfileDescription(mlInsights.spending_profile.type, savingsRate) : null;
@@ -427,11 +603,37 @@ export default function InsightsScreen() {
       <Text style={styles.title}>Financial Behavior Analysis</Text>
 
       {connectionError && (
-        <View style={{ backgroundColor: '#fee2e2', padding: 12, borderRadius: 8, marginBottom: 16 }}>
-          <Text style={styles.errorText}>{connectionError}</Text>
+        <View style={styles.errorCard}>
+          <Text style={[styles.errorText, { marginBottom: 8 }]}>{connectionError}</Text>
+          {lastError && (
+            <Text style={styles.debugInfo}>Error details: {lastError}</Text>
+          )}
           {backendUrl && (
             <Text style={styles.debugInfo}>Backend URL: {backendUrl}</Text>
           )}
+          <Text style={[styles.debugInfo, { marginTop: 8 }]}>
+            Attempt: {retryCount + 1} • Using {mlInsights?.spending_profile.confidence < 0.7 ? 'fallback' : 'ML'} analysis
+          </Text>
+          
+          <View style={styles.actionButtons}>
+            <TouchableOpacity 
+              style={[styles.actionButton, styles.retryButton]}
+              onPress={retryMLAnalysis}
+              disabled={generatingInsights}
+            >
+              {generatingInsights ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.actionButtonText}>Retry Analysis</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.actionButton, styles.testButton]}
+              onPress={testBackend}
+            >
+              <Text style={styles.actionButtonText}>Test Backend</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
 
@@ -441,6 +643,11 @@ export default function InsightsScreen() {
           <Text style={styles.loadingText}>
             {generatingInsights ? "Analyzing your spending behavior..." : "Loading your transactions..."}
           </Text>
+          {generatingInsights && (
+            <Text style={[styles.muted, { marginTop: 8 }]}>
+              This may take a few seconds...
+            </Text>
+          )}
         </View>
       ) : (
         <>
@@ -476,6 +683,12 @@ export default function InsightsScreen() {
               styles.card, 
               { borderLeftWidth: 6, borderLeftColor: getProfileColor(mlInsights.spending_profile.type) }
             ]}>
+              {mlInsights.spending_profile.confidence < 0.7 && (
+                <View style={styles.fallbackBadge}>
+                  <Text style={styles.fallbackText}>BASIC ANALYSIS</Text>
+                </View>
+              )}
+              
               <View style={styles.profileHeader}>
                 <View>
                   <Text style={styles.profileTitle}>{profileInfo.title}</Text>
@@ -602,47 +815,6 @@ export default function InsightsScreen() {
                 ))
             )}
           </View>
-
-          {/* Fallback Action Steps if no ML recommendations */}
-          {mlInsights && (!mlInsights.recommendations || mlInsights.recommendations.length === 0) && (
-            <View style={styles.card}>
-              <Text style={styles.sectionTitle}>Suggested Actions</Text>
-              {mlInsights.spending_profile.type === 'overspender' && (
-                <>
-                  <Text style={[styles.label, { color: '#dc2626', marginBottom: 8 }]}>Immediate Priority</Text>
-                  <Text style={{ color: colors.text, marginBottom: 12, lineHeight: 20 }}>
-                    • Create a strict budget focusing only on essential expenses
-                    {"\n"}• Identify and eliminate discretionary spending
-                    {"\n"}• Consider additional income sources
-                  </Text>
-                </>
-              )}
-              {mlInsights.spending_profile.type === 'moderate_spender' && (
-                <>
-                  <Text style={[styles.label, { color: '#f59e0b', marginBottom: 8 }]}>Improvement Areas</Text>
-                  <Text style={{ color: colors.text, marginBottom: 12, lineHeight: 20 }}>
-                    • Automate 10-15% of income to savings
-                    {"\n"}• Review recurring subscriptions
-                    {"\n"}• Set specific savings goals
-                  </Text>
-                </>
-              )}
-              {mlInsights.spending_profile.type === 'high_saver' && (
-                <>
-                  <Text style={[styles.label, { color: '#16a34a', marginBottom: 8 }]}>Next Level</Text>
-                  <Text style={{ color: colors.text, marginBottom: 12, lineHeight: 20 }}>
-                    • Explore investment opportunities
-                    {"\n"}• Consider high-yield savings accounts
-                    {"\n"}• Plan for long-term financial goals
-                  </Text>
-                </>
-              )}
-              <Text style={[styles.muted, { fontSize: 12, marginTop: 8 }]}>
-                Based on analysis of {Object.values(spentByCat).reduce((a, b) => a + b, 0) > 0 ? 
-                `${Object.keys(spentByCat).length} spending categories` : 'your transaction patterns'}
-              </Text>
-            </View>
-          )}
         </>
       )}
     </ScrollView>
